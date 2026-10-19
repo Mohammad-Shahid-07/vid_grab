@@ -1,5 +1,6 @@
 package com.vidgrab.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,40 +27,92 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import com.vidgrab.app.ui.browser.YouTubeBrowserScreen
+import com.vidgrab.app.ui.theme.ThemeManager
+import com.vidgrab.app.ui.theme.VidGrabTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
+
+    private val sharedUrlState = MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        setContent {
-            MaterialTheme {
-                val engineState by App.instance.engineState.collectAsState()
+        handleIncomingIntent(intent)
 
-                when (engineState) {
-                    is EngineInitState.Ready -> {
-                        // Core engines initialized; render embedded YouTube browser
-                        YouTubeBrowserScreen()
-                    }
-                    else -> {
-                        // Splash / Loading / Error screen during cold startup
-                        Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(innerPadding)
-                                    .background(Color(0xFFFAF8F5)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                EngineStatusScreen(engineState = engineState)
+        setContent {
+            VidGrabTheme(context = this) {
+                val themeManager = remember { ThemeManager.getInstance(this) }
+                val currentTheme by themeManager.themeState.collectAsState()
+
+                // Dynamically sync system status and navigation bar icon colors with theme mode
+                val insetsController = remember(window) {
+                    androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
+                }
+                LaunchedEffect(currentTheme.isDark) {
+                    insetsController.isAppearanceLightStatusBars = !currentTheme.isDark
+                    insetsController.isAppearanceLightNavigationBars = !currentTheme.isDark
+                }
+
+                MaterialTheme {
+                    val engineState by App.instance.engineState.collectAsState()
+                    val sharedUrl by sharedUrlState.collectAsState()
+
+                    when (engineState) {
+                        is EngineInitState.Ready -> {
+                            // Core engines initialized; render embedded YouTube browser
+                            YouTubeBrowserScreen(
+                                initialSharedUrl = sharedUrl,
+                                onSharedUrlConsumed = { sharedUrlState.value = null }
+                            )
+                        }
+                        else -> {
+                            // Splash / Loading / Error screen during cold startup
+                            Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(innerPadding)
+                                        .background(currentTheme.phoneBg),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    EngineStatusScreen(engineState = engineState)
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        val url = extractUrlFromIntent(intent)
+        if (!url.isNullOrBlank()) {
+            sharedUrlState.value = url
+        }
+    }
+
+    private fun extractUrlFromIntent(intent: Intent?): String? {
+        if (intent == null) return null
+        if (intent.action == Intent.ACTION_SEND) {
+            val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return null
+            val urlRegex = Regex("""https?://[^\s]+""")
+            return urlRegex.find(text)?.value
+        } else if (intent.action == Intent.ACTION_VIEW) {
+            return intent.dataString
+        }
+        return null
     }
 }
 

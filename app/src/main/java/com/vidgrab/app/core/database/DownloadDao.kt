@@ -98,8 +98,24 @@ interface DownloadDao {
         updatedAt: Long = System.currentTimeMillis()
     )
 
-    @Query("UPDATE download_tasks SET status = 'COMPLETED', progressPercent = 100.0, outputFileUri = :fileUri, outputFilePath = :filePath, updatedAt = :updatedAt WHERE id = :id")
-    suspend fun markCompleted(id: String, fileUri: String, filePath: String, updatedAt: Long = System.currentTimeMillis())
+    @Query("""
+        UPDATE download_tasks 
+        SET status = 'COMPLETED', 
+            progressPercent = 100.0, 
+            totalBytes = :realSizeBytes, 
+            downloadedBytes = :realSizeBytes, 
+            outputFileUri = :fileUri, 
+            outputFilePath = :filePath, 
+            updatedAt = :updatedAt 
+        WHERE id = :id
+    """)
+    suspend fun markCompleted(
+        id: String, 
+        fileUri: String, 
+        filePath: String, 
+        realSizeBytes: Long, 
+        updatedAt: Long = System.currentTimeMillis()
+    )
 
     @Query("UPDATE download_tasks SET status = 'FAILED', errorMessage = :error, updatedAt = :updatedAt WHERE id = :id")
     suspend fun markFailed(id: String, error: String, updatedAt: Long = System.currentTimeMillis())

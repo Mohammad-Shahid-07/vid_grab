@@ -23,7 +23,12 @@ sealed interface QualityPickerUiState {
         val selectedAudioExtension: String = "m4a",
         val selectedAudioBitrateKbps: Int = 160,
         val enableAria2cTurbo: Boolean = false,
-        val selectedBatchUrls: Set<String> = emptySet()
+        val selectedBatchUrls: Set<String> = emptySet(),
+        val orderedBatchItems: List<com.vidgrab.app.core.extractor.BatchPlaylistItem> = emptyList(),
+        val addNumberPrefix: Boolean = true,
+        val cutSponsor: Boolean = false,
+        val embedSubtitles: Boolean = false,
+        val embedChapters: Boolean = false
     ) : QualityPickerUiState
     data class Error(val message: String) : QualityPickerUiState
 }
@@ -44,9 +49,8 @@ class QualityPickerViewModel : ViewModel() {
                 val defaultAudio = resolved.audioOptions.firstOrNull { it.extension == "m4a" }
                     ?: resolved.audioOptions.firstOrNull()
 
-                val allBatchUrls = if (resolved is ResolvedMediaInfo.PlaylistOrChannel) {
-                    resolved.items.map { it.url }.toSet()
-                } else emptySet()
+                val playlistItems = (resolved as? ResolvedMediaInfo.PlaylistOrChannel)?.items ?: emptyList()
+                val allBatchUrls = playlistItems.map { it.url }.toSet()
 
                 _uiState.value = QualityPickerUiState.Success(
                     mediaInfo = resolved,
@@ -55,7 +59,9 @@ class QualityPickerViewModel : ViewModel() {
                     selectedAudioExtension = defaultAudio?.extension ?: "m4a",
                     selectedAudioBitrateKbps = defaultAudio?.bitrateKbps ?: 160,
                     enableAria2cTurbo = false,
-                    selectedBatchUrls = allBatchUrls
+                    selectedBatchUrls = allBatchUrls,
+                    orderedBatchItems = playlistItems,
+                    addNumberPrefix = true
                 )
             } catch (e: Exception) {
                 Timber.e(e, "Error resolving formats for %s", payload.url)
@@ -97,10 +103,50 @@ class QualityPickerViewModel : ViewModel() {
     fun toggleSelectAllBatch(selectAll: Boolean) {
         val current = _uiState.value as? QualityPickerUiState.Success ?: return
         val allUrls = if (current.mediaInfo is ResolvedMediaInfo.PlaylistOrChannel) {
-            current.mediaInfo.items.map { it.url }.toSet()
+            current.orderedBatchItems.map { it.url }.toSet()
         } else emptySet()
 
         _uiState.value = current.copy(selectedBatchUrls = if (selectAll) allUrls else emptySet())
+    }
+
+    fun toggleNumberPrefix(enabled: Boolean) {
+        val current = _uiState.value as? QualityPickerUiState.Success ?: return
+        _uiState.value = current.copy(addNumberPrefix = enabled)
+    }
+
+    fun moveBatchItemUp(index: Int) {
+        val current = _uiState.value as? QualityPickerUiState.Success ?: return
+        if (index <= 0 || index >= current.orderedBatchItems.size) return
+        val list = current.orderedBatchItems.toMutableList()
+        val temp = list[index]
+        list[index] = list[index - 1]
+        list[index - 1] = temp
+        _uiState.value = current.copy(orderedBatchItems = list)
+    }
+
+    fun moveBatchItemDown(index: Int) {
+        val current = _uiState.value as? QualityPickerUiState.Success ?: return
+        if (index < 0 || index >= current.orderedBatchItems.size - 1) return
+        val list = current.orderedBatchItems.toMutableList()
+        val temp = list[index]
+        list[index] = list[index + 1]
+        list[index + 1] = temp
+        _uiState.value = current.copy(orderedBatchItems = list)
+    }
+
+    fun toggleCutSponsor(enabled: Boolean) {
+        val current = _uiState.value as? QualityPickerUiState.Success ?: return
+        _uiState.value = current.copy(cutSponsor = enabled)
+    }
+
+    fun toggleEmbedSubtitles(enabled: Boolean) {
+        val current = _uiState.value as? QualityPickerUiState.Success ?: return
+        _uiState.value = current.copy(embedSubtitles = enabled)
+    }
+
+    fun toggleEmbedChapters(enabled: Boolean) {
+        val current = _uiState.value as? QualityPickerUiState.Success ?: return
+        _uiState.value = current.copy(embedChapters = enabled)
     }
 
     fun dismiss() {
@@ -123,22 +169,50 @@ class QualityPickerViewModel : ViewModel() {
 
         val ext = if (isAudio) state.selectedAudioExtension else "mp4"
 
-        val selectedSize = if (isAudio) {
-            info.audioOptions.firstOrNull { it.extension == state.selectedAudioExtension && it.bitrateKbps == state.selectedAudioBitrateKbps }?.estimatedBytes ?: 0L
-        } else {
-            info.videoOptions.firstOrNull { it.height == state.selectedVideoHeight }?.estimatedTotalBytes ?: 0L
+        val isBatch = info is ResolvedMediaInfo.PlaylistOrChannel
+        if (isBatch && state.selectedBatchUrls.isEmpty()) {
+            return null
         }
 
-        val isBatch = info is ResolvedMediaInfo.PlaylistOrChannel
-        val batchUrls = if (isBatch) state.selectedBatchUrls.toList() else emptyList()
-        val batchItems = if (isBatch) {
-            (info as ResolvedMediaInfo.PlaylistOrChannel).items.filter { state.selectedBatchUrls.contains(it.url) }
+        val rawSelectedItems = if (isBatch) {
+            state.orderedBatchItems.filter { state.selectedBatchUrls.contains(it.url) }
         } else emptyList()
+
+        val totalSelectedDuration = if (isBatch) {
+            rawSelectedItems.sumOf { it.durationSeconds }.takeIf { it > 0 } ?: (rawSelectedItems.size.toLong() * 240L)
+        } else {
+            (info as? ResolvedMediaInfo.SingleVideo)?.durationSeconds?.takeIf { it > 0 } ?: 240L
+        }
+
+        val selectedSize = if (isAudio) {
+            val br = state.selectedAudioBitrateKbps.toLong().takeIf { it > 0 } ?: 160L
+            (br * 1000L / 8L) * totalSelectedDuration
+        } else {
+            val h = state.selectedVideoHeight
+            val vBr = when (h) { 2160 -> 15000L; 1440 -> 8000L; 1080 -> 4500L; 720 -> 2500L; 480 -> 1200L; 360 -> 700L; 240 -> 400L; else -> 200L }
+            ((vBr + 128L) * 1000L / 8L) * totalSelectedDuration
+        }
+
+        val batchItems = if (state.addNumberPrefix) {
+            rawSelectedItems.mapIndexed { index, item ->
+                val prefix = String.format("%02d - ", index + 1)
+                val cleanTitle = if (item.title.matches(Regex("""^\d{1,3}\s*[-.]\s*.*"""))) {
+                    item.title.replace(Regex("""^\d{1,3}\s*[-.]\s*"""), "")
+                } else item.title
+                item.copy(title = "$prefix$cleanTitle")
+            }
+        } else {
+            rawSelectedItems
+        }
+
+        val batchUrls = batchItems.map { it.url }
+
+        val singleSponsors = (info as? ResolvedMediaInfo.SingleVideo)?.sponsorSegments ?: emptyList()
 
         return DownloadRequestSpec(
             url = info.url,
             title = info.title,
-            mediaType = if (isBatch) (if (isAudio) "AUDIO" else "VIDEO") else if (isAudio) "AUDIO" else "VIDEO",
+            mediaType = if (isAudio) "AUDIO" else "VIDEO",
             targetHeight = if (isAudio) null else state.selectedVideoHeight,
             formatSelector = formatSelector,
             outputExtension = ext,
@@ -146,6 +220,10 @@ class QualityPickerViewModel : ViewModel() {
             isBatch = isBatch,
             batchUrls = batchUrls,
             batchItems = batchItems,
+            cutSponsor = state.cutSponsor,
+            sponsorSegments = singleSponsors,
+            embedSubtitles = state.embedSubtitles,
+            embedChapters = state.embedChapters,
             poToken = WebViewSessionManager.currentPoToken,
             visitorData = WebViewSessionManager.currentVisitorData,
             enableAria2c = state.enableAria2cTurbo,

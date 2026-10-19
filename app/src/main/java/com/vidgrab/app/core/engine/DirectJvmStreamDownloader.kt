@@ -39,7 +39,8 @@ object DirectJvmStreamDownloader {
         isCancelled: () -> Boolean = { false },
         onProgress: suspend (progress: Float, etaSeconds: Long, speedText: String) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        onProgress(1f, -1L, "Resolving stream (Fast JVM)...")
+        val initP = task.progressPercent.coerceAtLeast(1f)
+        onProgress(initP, -1L, if (task.progressPercent > 2f) "Resuming..." else "Connecting...")
 
         val streamInfo = StreamInfo.getInfo(ServiceList.YouTube, task.url)
         val durationSec = streamInfo.duration.coerceAtLeast(1L)
@@ -49,9 +50,19 @@ object DirectJvmStreamDownloader {
         if (isCancelled()) throw InterruptedException("Download cancelled by user")
 
         if (task.isAudioOnly) {
-            return@withContext downloadAudioOnly(streamInfo, task, workDir, isCancelled, onProgress)
+            val audioFile = downloadAudioOnly(streamInfo, task, workDir, isCancelled, onProgress)
+            return@withContext if (task.cutSponsor && !task.sponsorSegmentsJson.isNullOrBlank()) {
+                cutSponsorSegments(context, audioFile, task.sponsorSegmentsJson, isCancelled, onProgress)
+            } else {
+                audioFile
+            }
         } else {
-            return@withContext downloadVideo(context, streamInfo, task, workDir, isCancelled, onProgress)
+            val videoFile = downloadVideo(context, streamInfo, task, workDir, isCancelled, onProgress)
+            return@withContext if (task.cutSponsor && !task.sponsorSegmentsJson.isNullOrBlank()) {
+                cutSponsorSegments(context, videoFile, task.sponsorSegmentsJson, isCancelled, onProgress)
+            } else {
+                videoFile
+            }
         }
     }
 
@@ -85,8 +96,8 @@ object DirectJvmStreamDownloader {
         downloadStreamUrl(
             url = streamUrl,
             outputFile = outputFile,
-            label = "Direct Audio",
-            startProgress = 2f,
+            label = "Audio",
+            startProgress = 0f,
             endProgress = 100f,
             isCancelled = isCancelled,
             onProgress = onProgress
@@ -120,7 +131,7 @@ object DirectJvmStreamDownloader {
                 downloadStreamUrl(
                     url = muxedUrl,
                     outputFile = outputFile,
-                    label = "Direct ${res}p",
+                    label = "${res}p Video",
                     startProgress = 2f,
                     endProgress = 100f,
                     isCancelled = isCancelled,
@@ -171,7 +182,7 @@ object DirectJvmStreamDownloader {
             url = videoUrl,
             outputFile = tempVideo,
             label = "${effectiveVideoRes}p Video",
-            startProgress = 2f,
+            startProgress = 0f,
             endProgress = 78f,
             isCancelled = isCancelled,
             onProgress = onProgress
@@ -192,8 +203,8 @@ object DirectJvmStreamDownloader {
 
         if (isCancelled()) throw InterruptedException("Download cancelled by user")
 
-        // 3. Lossless FFmpeg Muxing (94% -> 100%)
-        onProgress(94f, 2L, "Merging video & audio (FFmpeg)...")
+        // 3. Lossless Muxing (94% -> 100%)
+        onProgress(94f, 2L, "Merging audio and video...")
         val finalFile = File(workDir, "output.mp4")
         if (finalFile.exists()) finalFile.delete()
 
@@ -216,7 +227,108 @@ object DirectJvmStreamDownloader {
             return fallbackMkv
         }
 
-        throw IllegalStateException("FFmpeg failed to merge video and audio streams")
+        throw IllegalStateException("Failed to merge video and audio streams")
+    }
+
+    private suspend fun cutSponsorSegments(
+        context: Context,
+        inputFile: File,
+        sponsorJson: String,
+        isCancelled: () -> Boolean,
+        onProgress: suspend (Float, Long, String) -> Unit
+    ): File {
+        val segments = sponsorJson.split(";").mapNotNull { part ->
+            val range = part.split("-")
+            if (range.size == 2) {
+                val s = range[0].toLongOrNull()
+                val e = range[1].toLongOrNull()
+                if (s != null && e != null && e > s) Pair(s, e) else null
+            } else null
+        }.sortedBy { it.first }
+
+        if (segments.isEmpty() || isCancelled()) return inputFile
+
+        onProgress(97f, 1L, "Removing sponsor content...")
+        val ffmpegBin = findFFmpegExecutable(context) ?: return inputFile
+
+        try {
+            val parentDir = inputFile.parentFile ?: return inputFile
+            val keepParts = mutableListOf<File>()
+            var curStart = 0L
+
+            for ((idx, seg) in segments.withIndex()) {
+                if (seg.first > curStart) {
+                    val partFile = File(parentDir, "keep_part_$idx.mp4")
+                    if (partFile.exists()) partFile.delete()
+
+                    val duration = seg.first - curStart
+                    val cmd = listOf(
+                        ffmpegBin.absolutePath,
+                        "-y",
+                        "-ss", curStart.toString(),
+                        "-t", duration.toString(),
+                        "-i", inputFile.absolutePath,
+                        "-c", "copy",
+                        partFile.absolutePath
+                    )
+                    val proc = ProcessBuilder(cmd).directory(parentDir).redirectErrorStream(true).start()
+                    val code = proc.waitFor()
+                    if (code == 0 && partFile.exists() && partFile.length() > 0) {
+                        keepParts.add(partFile)
+                    }
+                }
+                curStart = maxOf(curStart, seg.second)
+            }
+
+            // Final part after last sponsor segment
+            val lastPartFile = File(parentDir, "keep_part_last.mp4")
+            if (lastPartFile.exists()) lastPartFile.delete()
+            val lastCmd = listOf(
+                ffmpegBin.absolutePath,
+                "-y",
+                "-ss", curStart.toString(),
+                "-i", inputFile.absolutePath,
+                "-c", "copy",
+                lastPartFile.absolutePath
+            )
+            val lastProc = ProcessBuilder(lastCmd).directory(parentDir).redirectErrorStream(true).start()
+            val lastCode = lastProc.waitFor()
+            if (lastCode == 0 && lastPartFile.exists() && lastPartFile.length() > 0) {
+                keepParts.add(lastPartFile)
+            }
+
+            if (keepParts.isNotEmpty()) {
+                val concatList = File(parentDir, "concat.txt")
+                concatList.writeText(keepParts.joinToString("\n") { "file '${it.name}'" })
+
+                val finalTrimmed = File(parentDir, "trimmed_output.mp4")
+                if (finalTrimmed.exists()) finalTrimmed.delete()
+
+                val concatCmd = listOf(
+                    ffmpegBin.absolutePath,
+                    "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", concatList.absolutePath,
+                    "-c", "copy",
+                    finalTrimmed.absolutePath
+                )
+                val concatProc = ProcessBuilder(concatCmd).directory(parentDir).redirectErrorStream(true).start()
+                val concatCode = concatProc.waitFor()
+
+                keepParts.forEach { it.delete() }
+                concatList.delete()
+
+                if (concatCode == 0 && finalTrimmed.exists() && finalTrimmed.length() > 0) {
+                    inputFile.delete()
+                    finalTrimmed.renameTo(inputFile)
+                    Timber.i("DirectJvm: Successfully cut sponsor segments! Final size: %d", inputFile.length())
+                }
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "DirectJvm: Failed to trim sponsor segments, preserving original media.")
+        }
+        return inputFile
     }
 
     private fun findFFmpegExecutable(context: Context): File? {
@@ -310,7 +422,7 @@ object DirectJvmStreamDownloader {
                 onProgress = onProgress
             )
         } else {
-            // Fallback: Stream directly using single GET
+            // Fallback: Stream directly with Range resume support
             downloadDirectStream(
                 url = url,
                 outputFile = outputFile,
@@ -344,6 +456,13 @@ object DirectJvmStreamDownloader {
         val initialResumeOffset = currentStart
         val startTimeMs = System.currentTimeMillis()
         var lastEmitTimeMs = 0L
+
+        // Immediately emit existing progress if resuming
+        if (downloadedBytes > 0 && totalBytes > 0) {
+            val initFraction = downloadedBytes.toFloat() / totalBytes
+            val initP = startProgress + (initFraction * (endProgress - startProgress))
+            onProgress(initP.coerceIn(startProgress, endProgress), -1L, String.format(Locale.US, "Resuming • %s", label))
+        }
 
         RandomAccessFile(outputFile, "rw").use { raf ->
             while (currentStart < totalBytes && !isCancelled()) {
@@ -422,22 +541,42 @@ object DirectJvmStreamDownloader {
         onProgress: suspend (Float, Long, String) -> Unit
     ) {
         val client = App.sharedOkHttpClient
-        val req = Request.Builder()
+        val existingBytes = if (outputFile.exists()) outputFile.length() else 0L
+
+        val reqBuilder = Request.Builder()
             .url(url)
             .header("User-Agent", NetworkConstants.activeUserAgent)
-            .build()
 
-        client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) throw IllegalStateException("HTTP ${res.code} connecting to stream")
+        if (existingBytes > 0L) {
+            reqBuilder.header("Range", "bytes=$existingBytes-")
+        }
+
+        client.newCall(reqBuilder.build()).execute().use { res ->
+            if (!res.isSuccessful && res.code != 206) throw IllegalStateException("HTTP ${res.code} connecting to stream")
             val body = res.body ?: throw IllegalStateException("Empty body from stream")
-            val totalBytes = body.contentLength()
+            val isPartial = res.code == 206
+            val totalBytes = if (isPartial) {
+                val cr = res.header("Content-Range")
+                cr?.substringAfterLast('/')?.toLongOrNull() ?: (existingBytes + (body.contentLength().takeIf { it > 0 } ?: 0L))
+            } else {
+                body.contentLength()
+            }
+
+            if (totalBytes > 0 && existingBytes >= totalBytes) {
+                onProgress(endProgress, 0L, "Complete")
+                return
+            }
+
+            var downloadedBytes = if (isPartial) existingBytes else 0L
+            val initialResumeOffset = downloadedBytes
+            val appendMode = isPartial && existingBytes > 0L
+
             val stream = body.byteStream()
             val buf = ByteArray(64 * 1024)
-            var downloadedBytes = 0L
             val startTimeMs = System.currentTimeMillis()
             var lastEmitTimeMs = 0L
 
-            FileOutputStream(outputFile).use { fos ->
+            FileOutputStream(outputFile, appendMode).use { fos ->
                 var bytesRead: Int
                 while (stream.read(buf).also { bytesRead = it } != -1) {
                     if (isCancelled()) throw InterruptedException("Download cancelled")
@@ -448,7 +587,7 @@ object DirectJvmStreamDownloader {
                     if (now - lastEmitTimeMs >= 250L) {
                         lastEmitTimeMs = now
                         val elapsedSec = (now - startTimeMs).coerceAtLeast(1L) / 1000f
-                        val speedBytesPerSec = downloadedBytes / elapsedSec
+                        val speedBytesPerSec = if (elapsedSec > 0) (downloadedBytes - initialResumeOffset) / elapsedSec else 0f
                         val speedMb = speedBytesPerSec / (1024f * 1024f)
 
                         val currentP = if (totalBytes > 0) {

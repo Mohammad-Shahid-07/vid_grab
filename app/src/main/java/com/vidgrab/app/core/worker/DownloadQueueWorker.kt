@@ -113,11 +113,14 @@ class DownloadQueueWorker(
                 return@executeDownload
             }
 
+            val currentTotal = if (update.totalBytes > 0L) update.totalBytes else nextTask.totalBytes
+            val currentDownloaded = if (update.downloadedBytes > 0L) update.downloadedBytes else (currentTotal * (update.progress / 100f)).toLong()
+
             dao.updateProgress(
                 id = nextTask.id,
                 progress = update.progress,
-                downloadedBytes = (nextTask.totalBytes * (update.progress / 100f)).toLong(),
-                totalBytes = nextTask.totalBytes,
+                downloadedBytes = currentDownloaded,
+                totalBytes = currentTotal,
                 speed = update.speedText,
                 eta = update.etaSeconds,
                 status = update.status
@@ -149,8 +152,14 @@ class DownloadQueueWorker(
             fallbackExt = nextTask.outputExt
         )
 
-        // Update database to COMPLETED
-        dao.markCompleted(nextTask.id, exportResult.contentUri, exportResult.displayPath)
+        val actualBytes = if (downloadedFile.exists() && downloadedFile.length() > 0L) {
+            downloadedFile.length()
+        } else {
+            nextTask.totalBytes
+        }
+
+        // Update database to COMPLETED with real file size on disk
+        dao.markCompleted(nextTask.id, exportResult.contentUri, exportResult.displayPath, actualBytes)
 
         // Clean up app-private work dir
         MediaStoreExporter.cleanupTaskWorkDir(applicationContext, nextTask.id)

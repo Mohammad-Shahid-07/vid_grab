@@ -19,7 +19,9 @@ data class ProgressUpdate(
     val progress: Float,
     val speedText: String,
     val etaSeconds: Long,
-    val status: TaskStatus
+    val status: TaskStatus,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L
 )
 
 /**
@@ -50,7 +52,8 @@ object DownloadEngineExecutor {
             // =================================================================
             try {
                 Timber.i("DownloadEngine [Stage 1]: Attempting Fast JVM direct stream download for task %s", task.id)
-                onProgress(ProgressUpdate(1f, "Resolving stream (Fast JVM)...", -1L, TaskStatus.DOWNLOADING))
+                val startP = task.progressPercent.coerceAtLeast(0f)
+                onProgress(ProgressUpdate(startP, if (startP > 2f) "Resuming..." else "Connecting...", -1L, TaskStatus.DOWNLOADING))
 
                 val jvmFile = DirectJvmStreamDownloader.download(
                     context = context,
@@ -89,8 +92,8 @@ object DownloadEngineExecutor {
             // =================================================================
             // STAGE 2 (Fallback): yt-dlp Subprocess Engine with QuickJS (libqjs.so)
             // =================================================================
-            cleanSandboxForRetry(workDir)
-            onProgress(ProgressUpdate(2f, "Switching to yt-dlp engine...", -1L, TaskStatus.DOWNLOADING))
+            val stage2P = task.progressPercent.coerceAtLeast(0f)
+            onProgress(ProgressUpdate(stage2P, if (stage2P > 2f) "Resuming..." else "Connecting...", -1L, TaskStatus.DOWNLOADING))
 
             val targetHeight = task.targetHeight ?: 1080
             val qjsFile = File(context.applicationInfo.nativeLibraryDir, "libqjs.so")
@@ -229,6 +232,14 @@ object DownloadEngineExecutor {
                 addOption("-f", formatSelector)
                 addOption("--merge-output-format", "mp4")
             }
+
+            // Advanced Options
+            if (task.embedSubtitles) {
+                addOption("--embed-subs")
+            }
+            if (task.embedChapters) {
+                addOption("--embed-chapters")
+            }
         }
 
         var currentStatus = TaskStatus.DOWNLOADING
@@ -239,15 +250,15 @@ object DownloadEngineExecutor {
             val cleanLine = line.orEmpty()
             var stageText = extractSpeed(cleanLine)
 
-            if (cleanLine.contains("Downloading webpage")) {
-                stageText = "yt-dlp: Fetching webpage..."
-            } else if (cleanLine.contains("Downloading android player API JSON") || cleanLine.contains("Downloading player")) {
-                stageText = "yt-dlp: Solving player API..."
-            } else if (cleanLine.contains("Extracting URL")) {
-                stageText = "yt-dlp: Resolving stream..."
+            if (cleanLine.contains("Downloading webpage") ||
+                cleanLine.contains("Downloading android player API JSON") ||
+                cleanLine.contains("Downloading player") ||
+                cleanLine.contains("Extracting URL")
+            ) {
+                stageText = "Connecting..."
             } else if (cleanLine.contains("[Merger]") || cleanLine.contains("[ExtractAudio]") || cleanLine.contains("[ffmpeg]")) {
                 currentStatus = TaskStatus.MERGING
-                stageText = "Merging with FFmpeg..."
+                stageText = "Merging audio and video..."
             }
 
             val now = System.currentTimeMillis()

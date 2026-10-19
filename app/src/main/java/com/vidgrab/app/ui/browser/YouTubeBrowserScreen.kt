@@ -17,6 +17,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import android.webkit.ServiceWorkerClient
+import android.webkit.ServiceWorkerController
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -50,6 +52,8 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -93,6 +97,7 @@ import com.vidgrab.app.ui.downloads.DownloadsScreen
 import com.vidgrab.app.ui.modal.QualityPickerBottomSheet
 import com.vidgrab.app.ui.modal.QualityPickerViewModel
 import com.vidgrab.app.ui.settings.SettingsScreen
+import com.vidgrab.app.ui.theme.AppTheme
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.net.URLEncoder
@@ -120,6 +125,8 @@ class BraveMediaWebView(context: android.content.Context) : WebView(context) {
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun YouTubeBrowserScreen(
+    initialSharedUrl: String? = null,
+    onSharedUrlConsumed: () -> Unit = {},
     browserViewModel: BrowserViewModel = viewModel(),
     qualityPickerViewModel: QualityPickerViewModel = viewModel()
 ) {
@@ -138,6 +145,26 @@ fun YouTubeBrowserScreen(
     val qualityPickerUiState by qualityPickerViewModel.uiState.collectAsState()
     val activeTasks by queueRepository.activeTasks.collectAsState(initial = emptyList())
     val allTasks by queueRepository.allTasks.collectAsState(initial = emptyList())
+
+    // Auto-open shared links directly with download popup
+    LaunchedEffect(initialSharedUrl) {
+        if (!initialSharedUrl.isNullOrBlank()) {
+            val targetUrl = initialSharedUrl
+            currentNavScreen = BrowserNavScreen.BROWSER
+            webViewInstance?.let { webView ->
+                if (webView.url != targetUrl) {
+                    webView.loadUrl(targetUrl)
+                }
+            }
+            browserViewModel.onPageStarted(targetUrl)
+            val payload = browserViewModel.createFabDownloadPayload(
+                overrideUrl = targetUrl,
+                overrideTitle = "Resolving..."
+            )
+            qualityPickerViewModel.load(payload)
+            onSharedUrlConsumed()
+        }
+    }
 
     // Pause active HTML5 video whenever the quality picker is open or a download is pending
     LaunchedEffect(pendingDownload, qualityPickerUiState) {
@@ -181,9 +208,9 @@ fun YouTubeBrowserScreen(
                 )
             },
             floatingActionButton = {
-            // Radiant Gold Persistent Native FAB
+            // Radiant Gold Persistent Native FAB (Only shown when browsing media)
             val currentType = browserViewModel.classifyUrl(currentUrl)
-            if (currentType != "PAGE") {
+            if (currentNavScreen == BrowserNavScreen.BROWSER && currentType != "PAGE") {
                 FloatingActionButton(
                     onClick = {
                         webViewInstance?.evaluateJavascript(
@@ -195,8 +222,8 @@ fun YouTubeBrowserScreen(
                         val payload = browserViewModel.createFabDownloadPayload(overrideUrl = liveUrl, overrideTitle = liveTitle)
                         qualityPickerViewModel.load(payload)
                     },
-                    containerColor = Color(0xFFE5A93C),
-                    contentColor = Color.White,
+                    containerColor = AppTheme.accent.color,
+                    contentColor = AppTheme.accent.text,
                     shape = CircleShape,
                     modifier = Modifier.padding(16.dp)
                 ) {
@@ -224,9 +251,15 @@ fun YouTubeBrowserScreen(
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
 
+                        // Hardware Acceleration & Smooth Scrolling
+                        setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                        isScrollbarFadingEnabled = true
+
                         settings.apply {
                             javaScriptEnabled = true
                             domStorageEnabled = true
+                            databaseEnabled = true
+                            cacheMode = WebSettings.LOAD_DEFAULT
                             useWideViewPort = true
                             loadWithOverviewMode = true
                             mediaPlaybackRequiresUserGesture = false
@@ -244,6 +277,8 @@ fun YouTubeBrowserScreen(
                         val cookieManager = CookieManager.getInstance()
                         cookieManager.setAcceptCookie(true)
                         cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                        // ServiceWorker is allowed to run uninhibited to prevent player stream decoding failures
 
                         // Register JavascriptInterface for BotGuard tokens, button events, and URL sync
                         val jsBridge = YouTubeJsBridge(
@@ -314,7 +349,8 @@ fun YouTubeBrowserScreen(
                             }
                         }
 
-                        loadUrl("https://m.youtube.com")
+                        val startUrl = if (!initialSharedUrl.isNullOrBlank()) initialSharedUrl else "https://m.youtube.com"
+                        loadUrl(startUrl)
                     }
                 },
                 update = { webView ->
@@ -412,8 +448,11 @@ fun BrowserTopBar(
         }
     }
 
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
+
     Surface(
-        color = Color(0xFFFAF8F5),
+        color = theme.phoneBg,
         shadowElevation = 1.dp,
         modifier = Modifier.statusBarsPadding()
     ) {
@@ -424,15 +463,15 @@ fun BrowserTopBar(
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Item 1: Search / URL Input Box with gold focus ring
+                // Item 1: Search / URL Input Box with dynamic accent focus ring
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .height(40.dp)
-                        .background(Color(0xFFF3ECE7), RoundedCornerShape(20.dp))
+                        .background(theme.pillBg, RoundedCornerShape(20.dp))
                         .border(
                             width = 1.5.dp,
-                            color = if (isInputFocused) Color(0xFFE5A93C) else Color.Transparent,
+                            color = if (isInputFocused) accent.color else Color.Transparent,
                             shape = RoundedCornerShape(20.dp)
                         )
                         .padding(horizontal = 12.dp),
@@ -445,7 +484,7 @@ fun BrowserTopBar(
                         Icon(
                             imageVector = Icons.Default.Search,
                             contentDescription = "Search",
-                            tint = if (isInputFocused) Color(0xFFE5A93C) else Color(0xFF7F7875),
+                            tint = if (isInputFocused) accent.color else theme.textSecondary,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -454,7 +493,7 @@ fun BrowserTopBar(
                                 Text(
                                     text = "Search or paste YouTube URL...",
                                     fontSize = 13.sp,
-                                    color = Color(0xFF9E9792),
+                                    color = theme.textMuted,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -466,7 +505,7 @@ fun BrowserTopBar(
                                 textStyle = TextStyle(
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Normal,
-                                    color = Color(0xFF241D1B)
+                                    color = theme.textPrimary
                                 ),
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                                 keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
@@ -475,23 +514,25 @@ fun BrowserTopBar(
                                     .onFocusChanged { isInputFocused = it.isFocused }
                             )
                         }
-                        if (inputText.isNotEmpty()) {
-                            IconButton(
-                                onClick = { inputText = "" },
-                                modifier = Modifier.size(24.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Clear",
-                                    tint = Color(0xFF7F7875),
-                                    modifier = Modifier.size(14.dp)
-                                )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (inputText.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { inputText = "" },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Clear",
+                                        tint = theme.textSecondary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
                             }
-                        } else {
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFFE5A93C).copy(alpha = 0.15f))
+                                    .background(theme.pillTrackBg)
                                     .clickable {
                                         val clip = clipboardManager.getText()?.text?.trim()
                                         if (!clip.isNullOrBlank()) {
@@ -505,7 +546,7 @@ fun BrowserTopBar(
                                     Icon(
                                         imageVector = Icons.Default.ContentPaste,
                                         contentDescription = "Paste",
-                                        tint = Color(0xFFE5A93C),
+                                        tint = accent.color,
                                         modifier = Modifier.size(12.dp)
                                     )
                                     Spacer(modifier = Modifier.width(3.dp))
@@ -513,7 +554,7 @@ fun BrowserTopBar(
                                         text = "Paste",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFE5A93C)
+                                        color = accent.color
                                     )
                                 }
                             }
@@ -523,33 +564,42 @@ fun BrowserTopBar(
 
                 Spacer(modifier = Modifier.width(4.dp))
 
-                // Item 2: Downloads Icon Button (borderless, no bg, with active count badge)
-                IconButton(
-                    onClick = onOpenQueue,
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.TopEnd) {
+                // Item 2: Downloads Button (Clean capsule pill when active, standard icon when idle)
+                if (activeTaskCount > 0) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(accent.color.copy(alpha = 0.18f))
+                            .clickable(onClick = onOpenQueue)
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = "Downloads",
+                                tint = accent.color,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "$activeTaskCount",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = accent.color
+                            )
+                        }
+                    }
+                } else {
+                    IconButton(
+                        onClick = onOpenQueue,
+                        modifier = Modifier.size(40.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Download,
                             contentDescription = "Downloads",
-                            tint = if (activeTaskCount > 0) Color(0xFFE5A93C) else Color(0xFF241D1B),
-                            modifier = Modifier.size(24.dp)
+                            tint = theme.textPrimary,
+                            modifier = Modifier.size(22.dp)
                         )
-                        if (activeTaskCount > 0) {
-                            Box(
-                                modifier = Modifier
-                                    .size(15.dp)
-                                    .background(Color(0xFFE5A93C), CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "$activeTaskCount",
-                                    color = Color.White,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
                     }
                 }
 
@@ -561,13 +611,13 @@ fun BrowserTopBar(
                     Icon(
                         imageVector = Icons.Default.Settings,
                         contentDescription = "Settings",
-                        tint = Color(0xFF241D1B),
+                        tint = theme.textPrimary,
                         modifier = Modifier.size(22.dp)
                     )
                 }
             }
 
-            // Thin radiant gold progress indicator when loading
+            // Thin radiant accent progress indicator when loading
             AnimatedVisibility(
                 visible = isLoading,
                 enter = fadeIn(),
@@ -576,7 +626,7 @@ fun BrowserTopBar(
                 LinearProgressIndicator(
                     progress = { progress / 100f },
                     modifier = Modifier.fillMaxWidth().height(2.dp),
-                    color = Color(0xFFE5A93C),
+                    color = accent.color,
                     trackColor = Color.Transparent
                 )
             }

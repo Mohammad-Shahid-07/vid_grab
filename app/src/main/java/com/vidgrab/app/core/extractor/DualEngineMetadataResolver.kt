@@ -154,10 +154,10 @@ object DualEngineMetadataResolver {
                             Timber.e(e, "yt-dlp flat-playlist extraction also failed for %s", canonicalPlaylistUrl)
                         }
                     }
-
-                    val (presets, audioPresets) = FormatSelectorBuilder.buildStandardPresets()
+                    val totalPlaylistSec = previewItems.sumOf { it.durationSeconds }.takeIf { it > 0 } ?: (previewItems.size.toLong() * 240L)
+                    val (presets, audioPresets) = FormatSelectorBuilder.buildStandardPresets(totalPlaylistSec)
                     val elapsed = System.currentTimeMillis() - startTime
-                    Timber.i("DualEngine: Resolved Playlist in %d ms (%d items)", elapsed, previewItems.size)
+                    Timber.i("DualEngine: Resolved Playlist in %d ms (%d items, totalDuration=%ds)", elapsed, previewItems.size, totalPlaylistSec)
 
                     return@withContext ResolvedMediaInfo.PlaylistOrChannel(
                         id = targetPlaylistId ?: canonicalPlaylistUrl,
@@ -272,6 +272,18 @@ object DualEngineMetadataResolver {
                     val elapsed = System.currentTimeMillis() - startTime
                     Timber.i("DualEngine: Resolved Video via Tier 2 in %d ms (%d video, %d audio formats)", elapsed, videoOptions.size, audioOptions.size)
 
+                    val sponsorList = mutableListOf<Pair<Long, Long>>()
+                    val desc = streamInfo.description?.content.orEmpty()
+                    val chapterRegex = Regex("""(?:(\d{1,2}):)?(\d{2}):(\d{2})\s+.*?(?:sponsor|promo|partner|advertisement|sponsored)""", RegexOption.IGNORE_CASE)
+                    for (m in chapterRegex.findAll(desc)) {
+                        val h = m.groupValues[1].toLongOrNull() ?: 0L
+                        val min = m.groupValues[2].toLongOrNull() ?: 0L
+                        val sec = m.groupValues[3].toLongOrNull() ?: 0L
+                        val s = (h * 3600L) + (min * 60L) + sec
+                        val e = (s + 90L).coerceAtMost(durationSec)
+                        sponsorList.add(s to e)
+                    }
+
                     return@withContext ResolvedMediaInfo.SingleVideo(
                         videoId = streamInfo.id.orEmpty(),
                         url = payload.url,
@@ -281,13 +293,136 @@ object DualEngineMetadataResolver {
                         thumbnailUrl = streamInfo.thumbnails.firstOrNull()?.url,
                         videoOptions = videoOptions.ifEmpty { FormatSelectorBuilder.buildStandardPresets(durationSec).first },
                         audioOptions = audioOptions.ifEmpty { FormatSelectorBuilder.buildStandardPresets(durationSec).second },
+                        sponsorSegments = sponsorList,
                         source = ResolutionSource.TIER_2_NEWPIPE_JVM,
                         resolutionTimeMs = elapsed
                     )
                 }
             }
         } catch (e: Exception) {
-            Timber.e(e, "Tier 2 NewPipe resolution failed (age-gate / network / challenge), falling back to Tier 3 Smart Presets")
+            Timber.w(e, "Tier 2 NewPipe resolution failed for %s; attempting yt-dlp -J metadata extraction", payload.url)
+            try {
+                val request = com.yausername.youtubedl_android.YoutubeDLRequest(payload.url)
+                    .addOption("-J")
+                    .addOption("--no-playlist")
+                    .addOption("--socket-timeout").addOption("10")
+                val response = com.yausername.youtubedl_android.YoutubeDL.getInstance().execute(request)
+                val root = JSONObject(response.out)
+                val realTitle = root.optString("title", payload.title)
+                val author = root.optString("uploader", "")
+                val durationSec = root.optLong("duration", 0L).coerceAtLeast(1L)
+                val thumb = root.optString("thumbnail")
+                val formats = root.optJSONArray("formats")
+
+                if (formats != null && formats.length() > 0) {
+                    val videoOpts = mutableListOf<VideoQualityOption>()
+                    val audioOpts = mutableListOf<AudioQualityOption>()
+
+                    var bestAudioBytes = 0L
+                    for (i in 0 until formats.length()) {
+                        val f = formats.optJSONObject(i) ?: continue
+                        val acodec = f.optString("acodec", "none")
+                        val vcodec = f.optString("vcodec", "none")
+                        val ext = f.optString("ext", "m4a")
+                        val size = f.optLong("filesize", 0L).takeIf { it > 0L }
+                            ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
+                            ?: ((f.optDouble("tbr", 128.0) * 1000.0 / 8.0) * durationSec).toLong()
+
+                        if (acodec != "none" && (vcodec == "none" || vcodec.isBlank())) {
+                            if (size > bestAudioBytes) bestAudioBytes = size
+                            val abr = f.optInt("abr", 128).coerceAtLeast(48)
+                            audioOpts.add(
+                                AudioQualityOption(
+                                    label = "$abr kbps ${ext.uppercase()}",
+                                    extension = ext,
+                                    acodec = acodec,
+                                    bitrateKbps = abr,
+                                    estimatedBytes = size,
+                                    formatSelector = FormatSelectorBuilder.buildAudioSelector(ext)
+                                )
+                            )
+                        }
+                    }
+                    if (bestAudioBytes == 0L) bestAudioBytes = (128L * 1000L / 8L) * durationSec
+
+                    val groupedByHeight = mutableMapOf<Int, JSONObject>()
+                    for (i in 0 until formats.length()) {
+                        val f = formats.optJSONObject(i) ?: continue
+                        val vcodec = f.optString("vcodec", "none")
+                        val height = f.optInt("height", 0)
+                        if (vcodec != "none" && height > 0) {
+                            val existing = groupedByHeight[height]
+                            if (existing == null || f.optString("vcodec").contains("avc", true)) {
+                                groupedByHeight[height] = f
+                            }
+                        }
+                    }
+
+                    groupedByHeight.entries.sortedByDescending { it.key }.forEach { (h, f) ->
+                        val rawSize = f.optLong("filesize", 0L).takeIf { it > 0L }
+                            ?: f.optLong("filesize_approx", 0L).takeIf { it > 0L }
+                            ?: ((f.optDouble("tbr", 2000.0) * 1000.0 / 8.0) * durationSec).toLong()
+                        val totalSize = rawSize + bestAudioBytes
+                        val label = when (h) {
+                            2160 -> "4K Ultra HD"
+                            1440 -> "2K Quad HD"
+                            1080 -> "1080p Full HD"
+                            720 -> "720p HD"
+                            480 -> "480p Standard"
+                            360 -> "360p Medium"
+                            240 -> "240p Compact"
+                            else -> "${h}p"
+                        }
+                        videoOpts.add(
+                            VideoQualityOption(
+                                height = h,
+                                label = label,
+                                fps = f.optInt("fps", 30),
+                                vcodec = if (f.optString("vcodec").contains("avc", true)) "H.264" else "VP9",
+                                container = "mp4",
+                                estimatedTotalBytes = totalSize,
+                                formatSelector = FormatSelectorBuilder.buildVideoSelector(h)
+                            )
+                        )
+                    }
+
+                    if (videoOpts.isNotEmpty()) {
+                        val elapsed = System.currentTimeMillis() - startTime
+                        Timber.i("DualEngine: Resolved Video via yt-dlp -J fallback in %d ms (%d formats)", elapsed, videoOpts.size)
+                        val chaptersArr = root.optJSONArray("chapters")
+                        val sponsorList = mutableListOf<Pair<Long, Long>>()
+                        if (chaptersArr != null) {
+                            for (c in 0 until chaptersArr.length()) {
+                                val ch = chaptersArr.optJSONObject(c) ?: continue
+                                val chTitle = ch.optString("title", "").lowercase()
+                                if (chTitle.contains("sponsor") || chTitle.contains("promo") || chTitle.contains("partner") || chTitle.contains("advertisement")) {
+                                    val s = ch.optDouble("start_time", 0.0).toLong()
+                                    val e = ch.optDouble("end_time", 0.0).toLong()
+                                    if (e > s) {
+                                        sponsorList.add(s to e)
+                                    }
+                                }
+                            }
+                        }
+
+                        return@withContext ResolvedMediaInfo.SingleVideo(
+                            videoId = targetVideoId ?: "",
+                            url = payload.url,
+                            title = realTitle,
+                            author = author,
+                            durationSeconds = durationSec,
+                            thumbnailUrl = thumb,
+                            videoOptions = videoOpts,
+                            audioOptions = audioOpts.ifEmpty { FormatSelectorBuilder.buildStandardPresets(durationSec).second },
+                            sponsorSegments = sponsorList,
+                            source = ResolutionSource.TIER_2_NEWPIPE_JVM,
+                            resolutionTimeMs = elapsed
+                        )
+                    }
+                }
+            } catch (ytdlEx: Exception) {
+                Timber.w(ytdlEx, "yt-dlp -J fallback also failed for %s", payload.url)
+            }
         }
 
         // ---------------------------------------------------------------------
@@ -424,6 +559,7 @@ object DualEngineMetadataResolver {
             thumbnailUrl = thumbnailUrl,
             videoOptions = videoOptions,
             audioOptions = audioOptions,
+            sponsorSegments = emptyList(),
             source = ResolutionSource.TIER_1_WEBVIEW_MEMORY,
             resolutionTimeMs = System.currentTimeMillis() - startTime
         )

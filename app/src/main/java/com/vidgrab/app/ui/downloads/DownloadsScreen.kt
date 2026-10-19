@@ -2,6 +2,7 @@ package com.vidgrab.app.ui.downloads
 
 import android.content.Context
 import android.content.Intent
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,18 +38,20 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -62,6 +67,9 @@ import androidx.core.net.toUri
 import com.vidgrab.app.core.database.DownloadTaskEntity
 import com.vidgrab.app.core.database.TaskStatus
 import com.vidgrab.app.core.queue.QueueRepository
+import com.vidgrab.app.ui.common.AsyncThumbnailImage
+import com.vidgrab.app.ui.theme.AppTheme
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -98,8 +106,12 @@ fun DownloadsScreen(
             )
     }
 
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
+
     Scaffold(
-        containerColor = Color(0xFFFAF8F5),
+        modifier = Modifier.navigationBarsPadding(),
+        containerColor = theme.phoneBg,
         topBar = {
             TopAppBar(
                 title = {
@@ -108,18 +120,18 @@ fun DownloadsScreen(
                             text = "Downloads",
                             fontWeight = FontWeight.Bold,
                             fontSize = 20.sp,
-                            color = Color(0xFF241D1B)
+                            color = theme.textPrimary
                         )
                         if (activeAndPendingTasks.isNotEmpty()) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Box(
                                 modifier = Modifier
-                                    .background(Color(0xFFE5A93C), CircleShape)
+                                    .background(accent.color, CircleShape)
                                     .padding(horizontal = 8.dp, vertical = 2.dp)
                             ) {
                                 Text(
                                     text = "${activeAndPendingTasks.size} active",
-                                    color = Color.White,
+                                    color = accent.text,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -132,11 +144,11 @@ fun DownloadsScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = Color(0xFF241D1B)
+                            tint = theme.textPrimary
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFFAF8F5))
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = theme.phoneBg)
             )
         }
     ) { innerPadding ->
@@ -157,8 +169,8 @@ fun DownloadsScreen(
             ) {
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = Color.White,
-                    border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+                    color = theme.cardBg,
+                    border = BorderStroke(1.dp, theme.dividerColor),
                     modifier = Modifier.clickable { queueRepository.pauseAll() }
                 ) {
                     Row(
@@ -168,7 +180,7 @@ fun DownloadsScreen(
                         Icon(
                             imageVector = Icons.Default.Pause,
                             contentDescription = null,
-                            tint = Color(0xFF7F7875),
+                            tint = theme.textSecondary,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -176,15 +188,15 @@ fun DownloadsScreen(
                             text = "Pause All",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFF241D1B)
+                            color = theme.textPrimary
                         )
                     }
                 }
 
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = Color.White,
-                    border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+                    color = theme.cardBg,
+                    border = BorderStroke(1.dp, theme.dividerColor),
                     modifier = Modifier.clickable { queueRepository.resumeAll() }
                 ) {
                     Row(
@@ -194,7 +206,7 @@ fun DownloadsScreen(
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = null,
-                            tint = Color(0xFFE5A93C),
+                            tint = accent.color,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -202,7 +214,7 @@ fun DownloadsScreen(
                             text = "Resume All",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFF241D1B)
+                            color = theme.textPrimary
                         )
                     }
                 }
@@ -210,26 +222,28 @@ fun DownloadsScreen(
                 Spacer(modifier = Modifier.weight(1f))
 
                 Text(
-                    text = "${allTasks.size} total tasks",
+                    text = "${allTasks.size} tasks",
                     fontSize = 12.sp,
-                    color = Color(0xFF7F7875)
+                    color = theme.textSecondary
                 )
             }
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Segmented Tabs: Downloading, Completed, Paused
-            TabRow(
+            // Segmented Scrollable Tabs: All (Default), Downloading, Completed, Paused (Zero text wrapping)
+            ScrollableTabRow(
                 selectedTabIndex = selectedTab,
-                containerColor = Color(0xFFF3ECE7),
-                contentColor = Color(0xFFE5A93C),
+                containerColor = theme.pillTrackBg,
+                contentColor = accent.color,
+                edgePadding = 0.dp,
                 indicator = { tabPositions ->
                     TabRowDefaults.SecondaryIndicator(
                         modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                        color = Color(0xFFE5A93C),
+                        color = accent.color,
                         height = 3.dp
                     )
                 },
+                divider = {},
                 modifier = Modifier.clip(RoundedCornerShape(12.dp))
             ) {
                 Tab(
@@ -237,8 +251,11 @@ fun DownloadsScreen(
                     onClick = { selectedTab = 0 },
                     text = {
                         Text(
-                            text = "Downloading (${activeAndPendingTasks.size})",
+                            text = "All (${allTasks.size})",
                             fontSize = 12.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            color = if (selectedTab == 0) theme.textPrimary else theme.textSecondary,
                             fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Medium
                         )
                     }
@@ -248,8 +265,11 @@ fun DownloadsScreen(
                     onClick = { selectedTab = 1 },
                     text = {
                         Text(
-                            text = "Completed (${completedTasks.size})",
+                            text = "Downloading (${activeAndPendingTasks.size})",
                             fontSize = 12.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            color = if (selectedTab == 1) theme.textPrimary else theme.textSecondary,
                             fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Medium
                         )
                     }
@@ -259,9 +279,26 @@ fun DownloadsScreen(
                     onClick = { selectedTab = 2 },
                     text = {
                         Text(
+                            text = "Completed (${completedTasks.size})",
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            color = if (selectedTab == 2) theme.textPrimary else theme.textSecondary,
+                            fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Medium
+                        )
+                    }
+                )
+                Tab(
+                    selected = selectedTab == 3,
+                    onClick = { selectedTab = 3 },
+                    text = {
+                        Text(
                             text = "Paused (${pausedTasks.size})",
                             fontSize = 12.sp,
-                            fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Medium
+                            maxLines = 1,
+                            softWrap = false,
+                            color = if (selectedTab == 3) theme.textPrimary else theme.textSecondary,
+                            fontWeight = if (selectedTab == 3) FontWeight.Bold else FontWeight.Medium
                         )
                     }
                 )
@@ -272,6 +309,41 @@ fun DownloadsScreen(
             // Tab Content
             when (selectedTab) {
                 0 -> {
+                    // All Tasks (Active & Pending at the top, then Paused, then Completed)
+                    if (allTasks.isEmpty()) {
+                        EmptyDownloadsPlaceholder("No downloads yet")
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(activeAndPendingTasks, key = { "active_${it.id}" }) { task ->
+                                DownloadCard(
+                                    task = task,
+                                    onPause = { queueRepository.pauseTask(task.id) },
+                                    onResume = { queueRepository.resumeTask(task.id) },
+                                    onCancel = { queueRepository.cancelTask(task.id) }
+                                )
+                            }
+                            items(pausedTasks, key = { "paused_${it.id}" }) { task ->
+                                DownloadCard(
+                                    task = task,
+                                    onPause = { },
+                                    onResume = { queueRepository.resumeTask(task.id) },
+                                    onCancel = { queueRepository.deleteTask(task.id) }
+                                )
+                            }
+                            items(completedTasks, key = { "completed_${it.id}" }) { task ->
+                                CompletedDownloadCard(
+                                    task = task,
+                                    onOpen = { openMediaFile(context, task.outputFileUri) },
+                                    onDelete = { queueRepository.deleteTask(task.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+                1 -> {
                     // Downloading (Active + Pending with Downloading strictly at top)
                     if (activeAndPendingTasks.isEmpty()) {
                         EmptyDownloadsPlaceholder("No active downloads")
@@ -291,7 +363,7 @@ fun DownloadsScreen(
                         }
                     }
                 }
-                1 -> {
+                2 -> {
                     // Completed
                     if (completedTasks.isEmpty()) {
                         EmptyDownloadsPlaceholder("No completed downloads yet")
@@ -310,7 +382,7 @@ fun DownloadsScreen(
                         }
                     }
                 }
-                2 -> {
+                3 -> {
                     // Paused
                     if (pausedTasks.isEmpty()) {
                         EmptyDownloadsPlaceholder("No paused downloads")
@@ -342,109 +414,175 @@ fun DownloadCard(
     onResume: () -> Unit,
     onCancel: () -> Unit
 ) {
+    val isConnecting = (task.status == TaskStatus.DOWNLOADING || task.status == TaskStatus.PENDING || task.status == TaskStatus.EXPANDING) &&
+            (task.downloadedBytes == 0L || task.progressPercent <= 2f) &&
+            !task.speedText.contains("/s") &&
+            !task.speedText.contains("Merging")
+
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(isConnecting) {
+        if (isConnecting) {
+            while (true) {
+                delay(1000L)
+                nowMs = System.currentTimeMillis()
+            }
+        }
+    }
+    val elapsedMs = nowMs - task.createdAt
+    val downloadedStr = formatBytes(task.downloadedBytes)
+    val totalStr = if (task.totalBytes > 0L) formatBytes(task.totalBytes) else ""
+    val sizeProgressStr = if (totalStr.isNotEmpty()) "$downloadedStr / $totalStr" else downloadedStr
+
+    val statusDisplayText = if (isConnecting) {
+        val totalSuffix = if (totalStr.isNotEmpty()) " • $totalStr" else ""
+        if (elapsedMs < 5000L) "Connecting$totalSuffix..." else "Download will start in a moment$totalSuffix..."
+    } else {
+        "$sizeProgressStr (${task.progressPercent.toInt()}%) • ${task.speedText.ifBlank { "Downloading..." }}"
+    }
+
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
+
     Surface(
-        color = Color.White,
+        color = theme.cardBg,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+        border = BorderStroke(1.dp, theme.dividerColor),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val statusColor = when (task.status) {
-                    TaskStatus.DOWNLOADING -> Color(0xFFE5A93C)
-                    TaskStatus.MERGING -> Color(0xFF2C6954)
-                    TaskStatus.PAUSED -> Color(0xFF8C827A)
-                    else -> Color(0xFF7F7875)
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Video thumbnail with format badge
+                Box(modifier = Modifier.size(width = 68.dp, height = 46.dp)) {
+                    AsyncThumbnailImage(
+                        url = task.thumbnailUrl,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp))
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(2.dp)
+                            .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = if (task.isAudioOnly) task.outputExt.uppercase() else "${task.targetHeight ?: 720}p",
+                            color = accent.color,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
-                Text(
-                    text = when (task.status) {
-                        TaskStatus.DOWNLOADING -> "DOWNLOADING"
-                        TaskStatus.MERGING -> "MERGING (-c copy)"
-                        TaskStatus.PAUSED -> "PAUSED"
-                        TaskStatus.EXPANDING -> "EXPANDING"
-                        else -> "PENDING"
-                    },
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = statusColor,
-                    modifier = Modifier
-                        .background(statusColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                )
+                Spacer(modifier = Modifier.width(10.dp))
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    val statusColor = when (task.status) {
+                        TaskStatus.DOWNLOADING -> accent.color
+                        TaskStatus.MERGING -> theme.successGreen
+                        TaskStatus.PAUSED -> theme.textSecondary
+                        else -> theme.textSecondary
+                    }
 
-                Text(
-                    text = "${task.outputExt.uppercase()}${if (task.targetHeight != null) " • ${task.targetHeight}p" else ""}",
-                    fontSize = 11.sp,
-                    color = Color(0xFF7F7875)
-                )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = when (task.status) {
+                                TaskStatus.DOWNLOADING -> if (isConnecting) "CONNECTING" else "DOWNLOADING"
+                                TaskStatus.MERGING -> "MERGING (-c copy)"
+                                TaskStatus.PAUSED -> "PAUSED"
+                                TaskStatus.EXPANDING -> "EXPANDING"
+                                else -> "QUEUED"
+                            },
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = statusColor,
+                            modifier = Modifier
+                                .background(statusColor.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
 
-                Spacer(modifier = Modifier.weight(1f))
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = task.title,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = theme.textPrimary
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(6.dp))
 
                 // Action Buttons
                 if (task.status == TaskStatus.DOWNLOADING || task.status == TaskStatus.MERGING) {
-                    IconButton(onClick = onPause, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color(0xFFE5A93C), modifier = Modifier.size(20.dp))
+                    IconButton(onClick = onPause, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.Pause, contentDescription = "Pause", tint = accent.color, modifier = Modifier.size(18.dp))
                     }
                 } else if (task.status == TaskStatus.PAUSED) {
-                    IconButton(onClick = onResume, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color(0xFFE5A93C), modifier = Modifier.size(20.dp))
+                    IconButton(onClick = onResume, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = accent.color, modifier = Modifier.size(18.dp))
                     }
                 }
-                Spacer(modifier = Modifier.width(4.dp))
-                IconButton(onClick = onCancel, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Cancel", tint = Color(0xFF7F7875), modifier = Modifier.size(18.dp))
+                IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Cancel", tint = theme.textSecondary, modifier = Modifier.size(16.dp))
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = task.title,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                color = Color(0xFF241D1B)
-            )
-
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Radiant Gold Progress Bar
-            LinearProgressIndicator(
-                progress = { task.progressPercent / 100f },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(5.dp)
-                    .clip(RoundedCornerShape(3.dp)),
-                color = Color(0xFFE5A93C),
-                trackColor = Color(0xFFF3ECE7)
-            )
+            // Radiant Progress Bar: Indeterminate when connecting, Determinate when bytes stream
+            if (isConnecting) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = accent.color,
+                    trackColor = theme.pillTrackBg
+                )
+            } else {
+                LinearProgressIndicator(
+                    progress = { task.progressPercent / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = accent.color,
+                    trackColor = theme.pillTrackBg
+                )
+            }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
-            // Speed & ETA
+            // Status, Speed & ETA
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${task.progressPercent.toInt()}% • ${task.speedText.ifBlank { "Starting download..." }}",
+                    text = statusDisplayText,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF5F5B59),
+                    color = theme.textSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
-                Text(
-                    text = if (task.etaSeconds > 0) "ETA ${task.etaSeconds}s" else "",
-                    fontSize = 11.sp,
-                    color = Color(0xFF7F7875)
-                )
+                if (!isConnecting && task.etaSeconds > 0) {
+                    Text(
+                        text = "ETA ${task.etaSeconds}s",
+                        fontSize = 11.sp,
+                        color = theme.textSecondary
+                    )
+                }
             }
         }
     }
@@ -456,30 +594,44 @@ fun CompletedDownloadCard(
     onOpen: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
+
     Surface(
-        color = Color.White,
+        color = theme.cardBg,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
-        modifier = Modifier.fillMaxWidth()
+        border = BorderStroke(1.dp, theme.dividerColor),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpen() }
     ) {
         Row(
             modifier = Modifier
-                .padding(16.dp)
+                .padding(14.dp)
                 .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(Color(0xFFE5A93C).copy(alpha = 0.12f), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = Color(0xFFE5A93C),
-                    modifier = Modifier.size(22.dp)
+            Box(modifier = Modifier.size(width = 68.dp, height = 46.dp)) {
+                AsyncThumbnailImage(
+                    url = task.thumbnailUrl,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(8.dp))
                 )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(2.dp)
+                        .background(theme.successGreen, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "Completed",
+                        tint = Color.White,
+                        modifier = Modifier.size(10.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -488,27 +640,27 @@ fun CompletedDownloadCard(
                 Text(
                     text = task.title,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = Color(0xFF241D1B)
+                    color = theme.textPrimary
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = "${task.outputExt.uppercase()} • ${formatBytes(task.totalBytes)}",
                     fontSize = 11.sp,
-                    color = Color(0xFF7F7875)
+                    color = theme.textSecondary
                 )
             }
 
             // Open Action
-            IconButton(onClick = onOpen, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.FileOpen, contentDescription = "Open", tint = Color(0xFFE5A93C), modifier = Modifier.size(20.dp))
+            IconButton(onClick = onOpen, modifier = Modifier.size(34.dp)) {
+                Icon(Icons.Default.FileOpen, contentDescription = "Open", tint = accent.color, modifier = Modifier.size(18.dp))
             }
 
             // Delete Action
-            IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFF7F7875), modifier = Modifier.size(18.dp))
+            IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = theme.textSecondary, modifier = Modifier.size(16.dp))
             }
         }
     }
@@ -516,6 +668,7 @@ fun CompletedDownloadCard(
 
 @Composable
 fun EmptyDownloadsPlaceholder(message: String) {
+    val theme = AppTheme.colors
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -524,7 +677,7 @@ fun EmptyDownloadsPlaceholder(message: String) {
     ) {
         Text(
             text = message,
-            color = Color(0xFF9E9792),
+            color = theme.textSecondary,
             fontSize = 14.sp
         )
     }
@@ -541,7 +694,10 @@ private fun formatBytes(bytes: Long): String {
 }
 
 private fun openMediaFile(context: Context, uriString: String?) {
-    if (uriString.isNullOrBlank()) return
+    if (uriString.isNullOrBlank()) {
+        Toast.makeText(context, "Media file path is unavailable", Toast.LENGTH_SHORT).show()
+        return
+    }
     try {
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uriString.toUri(), if (uriString.contains(".m4a") || uriString.contains(".opus") || uriString.contains(".mp3")) "audio/*" else "video/*")
@@ -551,5 +707,6 @@ private fun openMediaFile(context: Context, uriString: String?) {
         context.startActivity(intent)
     } catch (e: Exception) {
         timber.log.Timber.w(e, "Could not open media intent for: %s", uriString)
+        Toast.makeText(context, "No app available to play this media file", Toast.LENGTH_SHORT).show()
     }
 }

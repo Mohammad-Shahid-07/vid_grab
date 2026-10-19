@@ -1,14 +1,18 @@
 package com.vidgrab.app.ui.modal
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -16,47 +20,43 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vidgrab.app.core.extractor.DownloadRequestSpec
-import com.vidgrab.app.core.extractor.ResolutionSource
 import com.vidgrab.app.core.extractor.ResolvedMediaInfo
+import com.vidgrab.app.core.extractor.formatBytes
+import com.vidgrab.app.ui.theme.AppTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,6 +67,7 @@ fun QualityPickerBottomSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val state by viewModel.uiState.collectAsState()
+    val theme = AppTheme.colors
 
     if (state != null) {
         ModalBottomSheet(
@@ -75,15 +76,20 @@ fun QualityPickerBottomSheet(
                 onDismiss()
             },
             sheetState = sheetState,
-            containerColor = Color(0xFFFAF8F5),
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+            containerColor = Color.Transparent,
+            dragHandle = null,
+            scrimColor = Color.Black.copy(alpha = 0.55f)
         ) {
-            Box(
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 28.dp)
-                    .animateContentSize()
+                    .padding(horizontal = 14.dp)
+                    .padding(bottom = 20.dp)
+                    .animateContentSize(),
+                color = theme.sheetBg,
+                shape = RoundedCornerShape(26.dp),
+                border = BorderStroke(1.dp, theme.dividerColor),
+                shadowElevation = 8.dp
             ) {
                 when (val uiState = state) {
                     is QualityPickerUiState.Loading -> {
@@ -97,6 +103,12 @@ fun QualityPickerBottomSheet(
                             onAudioSelected = { ext, br -> viewModel.selectAudio(ext, br) },
                             onToggleBatchItem = { url -> viewModel.toggleBatchItem(url) },
                             onToggleSelectAll = { selectAll -> viewModel.toggleSelectAllBatch(selectAll) },
+                            onToggleNumberPrefix = { enabled -> viewModel.toggleNumberPrefix(enabled) },
+                            onToggleCutSponsor = { enabled -> viewModel.toggleCutSponsor(enabled) },
+                            onToggleEmbedSubtitles = { enabled -> viewModel.toggleEmbedSubtitles(enabled) },
+                            onToggleEmbedChapters = { enabled -> viewModel.toggleEmbedChapters(enabled) },
+                            onMoveItemUp = { index -> viewModel.moveBatchItemUp(index) },
+                            onMoveItemDown = { index -> viewModel.moveBatchItemDown(index) },
                             onStartDownload = {
                                 viewModel.buildDownloadRequestSpec()?.let { spec ->
                                     viewModel.dismiss()
@@ -120,18 +132,18 @@ fun LoadingView(payloadTitle: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 40.dp),
+            .padding(vertical = 36.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         CircularProgressIndicator(
-            color = Color(0xFFE5A93C),
-            modifier = Modifier.size(44.dp)
+            color = Color(0xFFB58E52),
+            modifier = Modifier.size(40.dp)
         )
-        Spacer(modifier = Modifier.height(18.dp))
+        Spacer(modifier = Modifier.height(16.dp))
         Text(
             text = "Resolving Format Options...",
             fontWeight = FontWeight.Bold,
-            fontSize = 17.sp,
+            fontSize = 16.sp,
             color = Color(0xFF241D1B)
         )
         Spacer(modifier = Modifier.height(6.dp))
@@ -141,13 +153,6 @@ fun LoadingView(payloadTitle: String) {
             color = Color(0xFF7F7875),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "⚡ In-Memory / Warm JVM Extractor",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = Color(0xFF2C6954)
         )
     }
 }
@@ -160,209 +165,284 @@ fun SuccessContentView(
     onAudioSelected: (String, Int) -> Unit,
     onToggleBatchItem: (String) -> Unit,
     onToggleSelectAll: (Boolean) -> Unit,
+    onToggleNumberPrefix: (Boolean) -> Unit,
+    onToggleCutSponsor: (Boolean) -> Unit,
+    onToggleEmbedSubtitles: (Boolean) -> Unit,
+    onToggleEmbedChapters: (Boolean) -> Unit,
+    onMoveItemUp: (Int) -> Unit,
+    onMoveItemDown: (Int) -> Unit,
     onStartDownload: () -> Unit
 ) {
     val info = state.mediaInfo
     val isBatch = info is ResolvedMediaInfo.PlaylistOrChannel
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        // Media Header Card
-        Row(
+    val selectedPlaylistItems = if (isBatch) {
+        state.orderedBatchItems.filter { state.selectedBatchUrls.contains(it.url) }
+    } else emptyList()
+
+    val totalSelectedDurationSec = if (isBatch) {
+        selectedPlaylistItems.sumOf { it.durationSeconds }.takeIf { it > 0 }
+            ?: (state.selectedBatchUrls.size.toLong() * 240L)
+    } else {
+        (info as? ResolvedMediaInfo.SingleVideo)?.durationSeconds?.takeIf { it > 0 } ?: 240L
+    }
+
+    fun calculateVideoSizeText(height: Int): String {
+        val vBr = when (height) {
+            2160 -> 15000L
+            1440 -> 8000L
+            1080 -> 4500L
+            720 -> 2500L
+            480 -> 1200L
+            360 -> 700L
+            240 -> 400L
+            else -> 200L
+        }
+        val bytes = ((vBr + 128L) * 1000L / 8L) * totalSelectedDurationSec
+        return formatBytes(bytes)
+    }
+
+    fun calculateAudioSizeText(bitrateKbps: Int): String {
+        val br = bitrateKbps.toLong().takeIf { it > 0 } ?: 160L
+        val bytes = (br * 1000L / 8L) * totalSelectedDurationSec
+        return formatBytes(bytes)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        // 1. Subtle top drag handle
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
+                .align(Alignment.CenterHorizontally)
+                .width(36.dp)
+                .height(4.dp)
+                .background(theme.dividerColor, RoundedCornerShape(2.dp))
+        )
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // 2. Header Row: Video Title + Subtitle on Left, Pill Switch (Video | Audio) on Right
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
+            Column(
                 modifier = Modifier
-                    .size(52.dp)
-                    .background(Color(0xFFE5A93C).copy(alpha = 0.12f), RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center
+                    .weight(1f)
+                    .padding(end = 10.dp)
             ) {
-                Icon(
-                    imageVector = if (isBatch) Icons.Default.VideoLibrary else Icons.Default.Movie,
-                    contentDescription = null,
-                    tint = Color(0xFFE5A93C),
-                    modifier = Modifier.size(26.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = info.title,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    maxLines = 2,
+                    fontSize = 15.sp,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = Color(0xFF241D1B)
+                    color = theme.textPrimary
                 )
-                Spacer(modifier = Modifier.height(3.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val badgeColor = when (info.source) {
-                        ResolutionSource.TIER_1_WEBVIEW_MEMORY -> Color(0xFF2C6954)
-                        ResolutionSource.TIER_2_NEWPIPE_JVM -> Color(0xFFE5A93C)
-                        ResolutionSource.TIER_3_SMART_PRESET -> Color(0xFF7F7875)
-                    }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (isBatch) "Select quality & playlist videos" else "Select quality & tap download below",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Normal,
+                    color = theme.textSecondary
+                )
+            }
 
+            // Compact Capsule Switch: Video | Audio
+            Row(
+                modifier = Modifier
+                    .background(theme.pillTrackBg, RoundedCornerShape(18.dp))
+                    .padding(3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(if (!state.isAudioOnlyTab) theme.pillBg else Color.Transparent)
+                        .clickable { onTabSelected(false) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
                     Text(
-                        text = when (info.source) {
-                            ResolutionSource.TIER_1_WEBVIEW_MEMORY -> "⚡ Instant (${info.resolutionTimeMs}ms)"
-                            ResolutionSource.TIER_2_NEWPIPE_JVM -> "⚡ JVM (${info.resolutionTimeMs}ms)"
-                            ResolutionSource.TIER_3_SMART_PRESET -> "🛡 Direct"
-                        },
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = badgeColor,
-                        modifier = Modifier
-                            .background(badgeColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                        text = "Video",
+                        fontSize = 12.sp,
+                        fontWeight = if (!state.isAudioOnlyTab) FontWeight.Bold else FontWeight.Medium,
+                        color = if (!state.isAudioOnlyTab) accent.color else theme.textSecondary
                     )
+                }
 
-                    if (isBatch) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        val p = info as ResolvedMediaInfo.PlaylistOrChannel
-                        Text(
-                            text = "${p.items.size} videos",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color(0xFF7F7875)
-                        )
-                    }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(if (state.isAudioOnlyTab) theme.pillBg else Color.Transparent)
+                        .clickable { onTabSelected(true) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "Audio",
+                        fontSize = 12.sp,
+                        fontWeight = if (state.isAudioOnlyTab) FontWeight.Bold else FontWeight.Medium,
+                        color = if (state.isAudioOnlyTab) accent.color else theme.textSecondary
+                    )
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Segmented Tab Switch: Video vs Audio
-        TabRow(
-            selectedTabIndex = if (state.isAudioOnlyTab) 1 else 0,
-            containerColor = Color(0xFFF3ECE7),
-            contentColor = Color(0xFFE5A93C),
-            indicator = { tabPositions ->
-                TabRowDefaults.SecondaryIndicator(
-                    modifier = Modifier.tabIndicatorOffset(tabPositions[if (state.isAudioOnlyTab) 1 else 0]),
-                    color = Color(0xFFE5A93C),
-                    height = 3.dp
-                )
-            },
-            modifier = Modifier.clip(RoundedCornerShape(12.dp))
-        ) {
-            Tab(
-                selected = !state.isAudioOnlyTab,
-                onClick = { onTabSelected(false) },
-                text = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Movie, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Video (MP4)", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+        // 3. 3-Column Quality Selector Grid with Dynamic Sizes
+        if (!state.isAudioOnlyTab) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                info.videoOptions.chunked(3).forEach { rowOptions ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        rowOptions.forEach { option ->
+                            val isSelected = option.height == state.selectedVideoHeight
+                            val sizeLabel = if (isBatch) calculateVideoSizeText(option.height) else option.formattedSize
+                            Box(modifier = Modifier.weight(1f)) {
+                                FloatingQualityGridCard(
+                                    title = "${option.height}p",
+                                    sizeText = sizeLabel,
+                                    isSelected = isSelected,
+                                    onClick = {
+                                        onVideoHeightSelected(option.height)
+                                    }
+                                )
+                            }
+                        }
+                        val remainder = 3 - rowOptions.size
+                        repeat(remainder) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
                     }
                 }
-            )
-            Tab(
-                selected = state.isAudioOnlyTab,
-                onClick = { onTabSelected(true) },
-                text = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.GraphicEq, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Audio (M4A/Opus)", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                info.audioOptions.chunked(3).forEach { rowOptions ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        rowOptions.forEach { audio ->
+                            val isSelected = audio.extension == state.selectedAudioExtension &&
+                                    audio.bitrateKbps == state.selectedAudioBitrateKbps
+                            val sizeLabel = if (isBatch) calculateAudioSizeText(audio.bitrateKbps) else audio.formattedSize
+                            Box(modifier = Modifier.weight(1f)) {
+                                FloatingQualityGridCard(
+                                    title = if (audio.bitrateKbps > 0) "${audio.bitrateKbps}k" else audio.extension.uppercase(),
+                                    sizeText = sizeLabel,
+                                    isSelected = isSelected,
+                                    onClick = {
+                                        onAudioSelected(audio.extension, audio.bitrateKbps)
+                                    }
+                                )
+                            }
+                        }
+                        val remainder = 3 - rowOptions.size
+                        repeat(remainder) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
                     }
-                }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // 2x2 Format Options Grid
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 180.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (!state.isAudioOnlyTab) {
-                items(info.videoOptions) { option ->
-                    val isSelected = option.height == state.selectedVideoHeight
-                    QualityGridCard(
-                        title = option.label,
-                        subtitle = "${option.fps}fps",
-                        sizeText = option.formattedSize,
-                        isSelected = isSelected,
-                        onClick = { onVideoHeightSelected(option.height) }
-                    )
-                }
-            } else {
-                items(info.audioOptions) { audio ->
-                    val isSelected = audio.extension == state.selectedAudioExtension &&
-                            audio.bitrateKbps == state.selectedAudioBitrateKbps
-                    QualityGridCard(
-                        title = audio.label,
-                        subtitle = audio.extension.uppercase(),
-                        sizeText = audio.formattedSize,
-                        isSelected = isSelected,
-                        onClick = { onAudioSelected(audio.extension, audio.bitrateKbps) }
-                    )
                 }
             }
         }
 
-        // VidMate Playlist / Channel Item Selector (if in batch mode)
+        // 4. Batch Playlist Selection & Drag Reordering (if batch mode)
         if (isBatch) {
-            val playlist = info as ResolvedMediaInfo.PlaylistOrChannel
             Spacer(modifier = Modifier.height(14.dp))
+
+            // Playlist Controls Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Batch Selection (${state.selectedBatchUrls.size}/${playlist.items.size} Selected)",
+                    text = "Playlist Videos (${state.selectedBatchUrls.size}/${state.orderedBatchItems.size})",
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
-                    color = Color(0xFF241D1B)
+                    color = theme.textPrimary
                 )
+
                 Text(
-                    text = if (state.selectedBatchUrls.size == playlist.items.size) "Deselect All" else "Select All",
+                    text = if (state.selectedBatchUrls.size == state.orderedBatchItems.size) "Deselect All" else "Select All",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFFE5A93C),
+                    color = accent.color,
                     modifier = Modifier.clickable {
-                        onToggleSelectAll(state.selectedBatchUrls.size != playlist.items.size)
+                        onToggleSelectAll(state.selectedBatchUrls.size != state.orderedBatchItems.size)
                     }
                 )
             }
-            Spacer(modifier = Modifier.height(6.dp))
 
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Vertically Scrollable Playlist List with Unified Circular Selection Pill & Drag Handle
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 140.dp)
-                    .background(Color.White, RoundedCornerShape(12.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .heightIn(min = 140.dp, max = 240.dp)
+                    .background(theme.pillTrackBg, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
             ) {
-                items(playlist.items) { item ->
+                itemsIndexed(state.orderedBatchItems, key = { _, item -> item.url }) { index, item ->
                     val checked = state.selectedBatchUrls.contains(item.url)
+                    var dragAccumulator by remember { mutableFloatStateOf(0f) }
+
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onToggleBatchItem(item.url) }
-                            .padding(vertical = 4.dp),
+                            .padding(vertical = 4.dp, horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Checkbox(
-                            checked = checked,
-                            onCheckedChange = { onToggleBatchItem(item.url) },
-                            colors = CheckboxDefaults.colors(
-                                checkedColor = Color(0xFFE5A93C),
-                                uncheckedColor = Color(0xFFC7BEB5)
-                            )
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        // Unified Circle Selection Pill
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(CircleShape)
+                                .background(if (checked) accent.color else Color.Transparent)
+                                .then(
+                                    if (!checked) Modifier.border(BorderStroke(1.5.dp, theme.dividerColor), CircleShape)
+                                    else Modifier
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (state.addNumberPrefix) {
+                                Text(
+                                    text = String.format("%02d", index + 1),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (checked) accent.text else theme.textSecondary
+                                )
+                            } else {
+                                if (checked) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Selected",
+                                        tint = accent.text,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = item.title,
@@ -370,7 +450,7 @@ fun SuccessContentView(
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                color = Color(0xFF241D1B)
+                                color = theme.textPrimary
                             )
                             if (item.durationSeconds > 0) {
                                 val mins = item.durationSeconds / 60
@@ -378,7 +458,52 @@ fun SuccessContentView(
                                 Text(
                                     text = String.format("%d:%02d", mins, secs),
                                     fontSize = 10.sp,
-                                    color = Color(0xFF7F7875)
+                                    color = theme.textSecondary
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        // Reorder Drag Handle (Replaces Up / Down buttons)
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .pointerInput(index, state.orderedBatchItems.size) {
+                                    detectVerticalDragGestures(
+                                        onDragStart = { dragAccumulator = 0f },
+                                        onDragEnd = { dragAccumulator = 0f },
+                                        onDragCancel = { dragAccumulator = 0f },
+                                        onVerticalDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragAccumulator += dragAmount
+                                            if (dragAccumulator > 36f && index < state.orderedBatchItems.size - 1) {
+                                                onMoveItemDown(index)
+                                                dragAccumulator = 0f
+                                            } else if (dragAccumulator < -36f && index > 0) {
+                                                onMoveItemUp(index)
+                                                dragAccumulator = 0f
+                                            }
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(16.dp)
+                                        .height(2.dp)
+                                        .background(theme.textSecondary.copy(alpha = 0.5f), RoundedCornerShape(1.dp))
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .width(16.dp)
+                                        .height(2.dp)
+                                        .background(theme.textSecondary.copy(alpha = 0.5f), RoundedCornerShape(1.dp))
                                 )
                             }
                         }
@@ -387,96 +512,281 @@ fun SuccessContentView(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        // 5. Advanced Options Collapsible Card
+        var advancedExpanded by remember { mutableStateOf(false) }
+        val singleSponsors = (info as? ResolvedMediaInfo.SingleVideo)?.sponsorSegments ?: emptyList()
+        val hasSponsors = singleSponsors.isNotEmpty()
 
-        // Primary Action CTA Button
-        Button(
-            onClick = onStartDownload,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE5A93C)),
+        val activeCount = (if (isBatch && state.addNumberPrefix) 1 else 0) +
+                (if (!isBatch && hasSponsors && state.cutSponsor) 1 else 0) +
+                (if (state.embedSubtitles) 1 else 0) +
+                (if (state.embedChapters) 1 else 0)
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Surface(
+            color = theme.pillTrackBg,
             shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
+            border = BorderStroke(1.dp, theme.dividerColor),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.White)
-            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.padding(10.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { advancedExpanded = !advancedExpanded },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Advanced Options",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            color = theme.textPrimary
+                        )
+                        if (activeCount > 0) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .background(accent.color.copy(alpha = 0.2f), CircleShape)
+                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = "$activeCount active",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = accent.color
+                                )
+                            }
+                        }
+                    }
+
+                    Icon(
+                        imageVector = if (advancedExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = theme.textSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                AnimatedVisibility(visible = advancedExpanded) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Prefix Numbering (Playlist only)
+                        if (isBatch) {
+                            AdvancedOptionSwitchRow(
+                                title = "Prefix numbering (01, 02...)",
+                                subtitle = "Number tracks in playlist order",
+                                checked = state.addNumberPrefix,
+                                onCheckedChange = onToggleNumberPrefix,
+                                accentColor = accent.color
+                            )
+                        }
+
+                        // Cut Sponsor (Single video only, STRICTLY only if sponsor chapters detected!)
+                        if (!isBatch && hasSponsors) {
+                            AdvancedOptionSwitchRow(
+                                title = "Cut sponsor segment",
+                                subtitle = "Detected in chapter markers",
+                                checked = state.cutSponsor,
+                                onCheckedChange = onToggleCutSponsor,
+                                accentColor = accent.color
+                            )
+                        }
+
+                        // Embed Subtitles
+                        AdvancedOptionSwitchRow(
+                            title = "Embed subtitles",
+                            subtitle = "Include subtitle stream in file",
+                            checked = state.embedSubtitles,
+                            onCheckedChange = onToggleEmbedSubtitles,
+                            accentColor = accent.color
+                        )
+
+                        // Embed Chapters
+                        AdvancedOptionSwitchRow(
+                            title = "Embed chapters",
+                            subtitle = "Include chapter markers in file",
+                            checked = state.embedChapters,
+                            onCheckedChange = onToggleEmbedChapters,
+                            accentColor = accent.color
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 6. Primary Action CTA Button
+        if (isBatch) {
+            val canQueue = state.selectedBatchUrls.isNotEmpty()
+            val totalSizeText = if (!state.isAudioOnlyTab) {
+                calculateVideoSizeText(state.selectedVideoHeight)
+            } else {
+                calculateAudioSizeText(state.selectedAudioBitrateKbps)
+            }
+
+            Button(
+                onClick = onStartDownload,
+                enabled = canQueue,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = accent.color,
+                    contentColor = accent.text,
+                    disabledContainerColor = theme.dividerColor,
+                    disabledContentColor = theme.textMuted
+                ),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp), tint = accent.text)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (canQueue) "Download Playlist (${state.selectedBatchUrls.size} Videos • $totalSizeText)" else "Select at least 1 video",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = accent.text
+                )
+            }
+        } else {
+            val ctaSize = if (!state.isAudioOnlyTab) {
+                calculateVideoSizeText(state.selectedVideoHeight)
+            } else {
+                calculateAudioSizeText(state.selectedAudioBitrateKbps)
+            }
+            val ctaLabel = if (!state.isAudioOnlyTab) {
+                "Download ${state.selectedVideoHeight}p ($ctaSize)"
+            } else {
+                val label = if (state.selectedAudioBitrateKbps > 0) "${state.selectedAudioBitrateKbps}k" else state.selectedAudioExtension.uppercase()
+                "Download $label ($ctaSize)"
+            }
+
+            Button(
+                onClick = onStartDownload,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = accent.color,
+                    contentColor = accent.text
+                ),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp), tint = accent.text)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = ctaLabel,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = accent.text
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AdvancedOptionSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    accentColor: Color
+) {
+    val theme = AppTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 8.dp)
+        ) {
             Text(
-                text = if (isBatch) "Queue Batch (${state.selectedBatchUrls.size} Items)" else "Start Download",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
+                text = title,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = theme.textPrimary
+            )
+            Text(
+                text = subtitle,
+                fontSize = 10.sp,
+                color = theme.textSecondary
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .width(38.dp)
+                .height(22.dp)
+                .clip(RoundedCornerShape(11.dp))
+                .background(if (checked) accentColor else theme.dividerColor)
+                .padding(2.dp),
+            contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .background(Color.White)
             )
         }
     }
 }
 
 @Composable
-fun QualityGridCard(
+fun FloatingQualityGridCard(
     title: String,
-    subtitle: String,
     sizeText: String,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
-    val borderColor = if (isSelected) Color(0xFFE5A93C) else Color(0xFFEFEAE2)
-    val bgColor = if (isSelected) Color(0xFFFFFBF2) else Color.White
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
+    val bgColor = if (isSelected) accent.color else theme.pillBg
+    val titleColor = if (isSelected) accent.text else theme.textPrimary
+    val subtitleColor = if (isSelected) accent.text.copy(alpha = 0.85f) else theme.textSecondary
 
     Surface(
         color = bgColor,
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.5.dp, borderColor),
+        shape = RoundedCornerShape(16.dp),
         modifier = Modifier
             .fillMaxWidth()
+            .height(58.dp)
             .clickable { onClick() }
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = title,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = Color(0xFF241D1B)
-                )
-                if (isSelected) {
-                    Box(
-                        modifier = Modifier
-                            .size(18.dp)
-                            .background(Color(0xFFE5A93C), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = "Selected",
-                            tint = Color.White,
-                            modifier = Modifier.size(12.dp)
-                        )
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = sizeText,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isSelected) Color(0xFFE5A93C) else Color(0xFF7F7875)
-                )
-                Text(
-                    text = subtitle,
-                    fontSize = 10.sp,
-                    color = Color(0xFF9E9792)
-                )
-            }
+            Text(
+                text = title,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = titleColor
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = sizeText,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = subtitleColor
+            )
         }
     }
 }
@@ -486,16 +796,17 @@ fun ErrorView(message: String, onDismiss: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 32.dp),
+            .padding(vertical = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("⚠ Quality Resolution Error", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFFBA1A1A))
+        Text("Unable to resolve formats", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFFBA1A1A))
         Spacer(modifier = Modifier.height(8.dp))
         Text(message, fontSize = 12.sp, color = Color(0xFF5F5B59))
         Spacer(modifier = Modifier.height(16.dp))
         Button(
             onClick = onDismiss,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE5A93C))
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB58E52)),
+            shape = RoundedCornerShape(12.dp)
         ) {
             Text("Close", color = Color.White)
         }

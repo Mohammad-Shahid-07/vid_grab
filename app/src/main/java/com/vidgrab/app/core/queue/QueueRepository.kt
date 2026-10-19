@@ -33,10 +33,19 @@ class QueueRepository(private val context: Context) {
 
     fun enqueue(spec: DownloadRequestSpec) {
         scope.launch {
+            val sponsorJson = spec.sponsorSegments.takeIf { it.isNotEmpty() }?.let { segs ->
+                segs.joinToString(";") { "${it.first}-${it.second}" }
+            }
+
             if (spec.isBatch) {
                 if (spec.batchItems.isNotEmpty()) {
                     // Bulk insert pre-selected playlist items with genuine titles and thumbnails
                     val entities = spec.batchItems.mapIndexed { index, item ->
+                        val itemBytes = estimateItemBytes(
+                            isAudio = spec.mediaType == "AUDIO",
+                            targetHeight = spec.targetHeight,
+                            durationSeconds = item.durationSeconds
+                        )
                         DownloadTaskEntity(
                             id = UUID.randomUUID().toString(),
                             url = item.url,
@@ -52,12 +61,21 @@ class QueueRepository(private val context: Context) {
                             playlistTitle = spec.title,
                             playlistIndex = index + 1,
                             status = TaskStatus.PENDING,
-                            totalBytes = spec.expectedSizeBytes
+                            totalBytes = itemBytes,
+                            cutSponsor = spec.cutSponsor,
+                            sponsorSegmentsJson = sponsorJson,
+                            embedSubtitles = spec.embedSubtitles,
+                            embedChapters = spec.embedChapters
                         )
                     }
                     dao.insertTasks(entities)
                     Timber.i("QueueRepository: Enqueued %d batch items for playlist: %s", entities.size, spec.title)
                 } else if (spec.batchUrls.isNotEmpty()) {
+                    val defaultItemBytes = estimateItemBytes(
+                        isAudio = spec.mediaType == "AUDIO",
+                        targetHeight = spec.targetHeight,
+                        durationSeconds = 240L
+                    )
                     val entities = spec.batchUrls.mapIndexed { index, url ->
                         DownloadTaskEntity(
                             id = UUID.randomUUID().toString(),
@@ -73,7 +91,11 @@ class QueueRepository(private val context: Context) {
                             playlistTitle = spec.title,
                             playlistIndex = index + 1,
                             status = TaskStatus.PENDING,
-                            totalBytes = spec.expectedSizeBytes
+                            totalBytes = defaultItemBytes,
+                            cutSponsor = spec.cutSponsor,
+                            sponsorSegmentsJson = sponsorJson,
+                            embedSubtitles = spec.embedSubtitles,
+                            embedChapters = spec.embedChapters
                         )
                     }
                     dao.insertTasks(entities)
@@ -95,7 +117,11 @@ class QueueRepository(private val context: Context) {
                     outputExt = spec.outputExtension,
                     useAria2c = spec.enableAria2c,
                     status = TaskStatus.PENDING,
-                    totalBytes = spec.expectedSizeBytes
+                    totalBytes = spec.expectedSizeBytes,
+                    cutSponsor = spec.cutSponsor,
+                    sponsorSegmentsJson = sponsorJson,
+                    embedSubtitles = spec.embedSubtitles,
+                    embedChapters = spec.embedChapters
                 )
                 dao.insertTask(entity)
                 Timber.i("QueueRepository: Enqueued single download: %s [%s]", spec.title, spec.formatSelector)
@@ -103,6 +129,26 @@ class QueueRepository(private val context: Context) {
 
             // Trigger WorkManager UIDT sequential execution
             startQueueWorker()
+        }
+    }
+
+    private fun estimateItemBytes(isAudio: Boolean, targetHeight: Int?, durationSeconds: Long): Long {
+        val sec = if (durationSeconds > 0) durationSeconds else 240L
+        return if (isAudio) {
+            (160L * 1000L / 8L) * sec
+        } else {
+            val h = targetHeight ?: 1080
+            val vBr = when (h) {
+                2160 -> 15000L
+                1440 -> 8000L
+                1080 -> 4500L
+                720 -> 2500L
+                480 -> 1200L
+                360 -> 700L
+                240 -> 400L
+                else -> 200L
+            }
+            ((vBr + 128L) * 1000L / 8L) * sec
         }
     }
 
@@ -117,6 +163,12 @@ class QueueRepository(private val context: Context) {
                     item.url.startsWith("/") -> "https://www.youtube.com${item.url}"
                     else -> "https://www.youtube.com/watch?v=${item.url}"
                 } ?: return@mapIndexedNotNull null
+
+                val itemBytes = estimateItemBytes(
+                    isAudio = spec.mediaType == "AUDIO",
+                    targetHeight = spec.targetHeight,
+                    durationSeconds = item.duration
+                )
 
                 DownloadTaskEntity(
                     id = UUID.randomUUID().toString(),
@@ -133,7 +185,10 @@ class QueueRepository(private val context: Context) {
                     playlistTitle = spec.title,
                     playlistIndex = index + 1,
                     status = TaskStatus.PENDING,
-                    totalBytes = spec.expectedSizeBytes
+                    totalBytes = itemBytes,
+                    cutSponsor = spec.cutSponsor,
+                    embedSubtitles = spec.embedSubtitles,
+                    embedChapters = spec.embedChapters
                 )
             }
             dao.insertTasks(entities)
@@ -152,7 +207,10 @@ class QueueRepository(private val context: Context) {
                 outputExt = spec.outputExtension,
                 useAria2c = spec.enableAria2c,
                 status = TaskStatus.PENDING,
-                totalBytes = spec.expectedSizeBytes
+                totalBytes = spec.expectedSizeBytes,
+                cutSponsor = spec.cutSponsor,
+                embedSubtitles = spec.embedSubtitles,
+                embedChapters = spec.embedChapters
             )
             dao.insertTask(fallback)
         }

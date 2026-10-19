@@ -49,6 +49,7 @@ sealed interface ResolvedMediaInfo {
     val resolutionTimeMs: Long
     val videoOptions: List<VideoQualityOption>
     val audioOptions: List<AudioQualityOption>
+    val thumbnailUrl: String?
 
     data class SingleVideo(
         val videoId: String,
@@ -56,9 +57,10 @@ sealed interface ResolvedMediaInfo {
         override val title: String,
         val author: String,
         val durationSeconds: Long,
-        val thumbnailUrl: String?,
+        override val thumbnailUrl: String?,
         override val videoOptions: List<VideoQualityOption>,
         override val audioOptions: List<AudioQualityOption>,
+        val sponsorSegments: List<Pair<Long, Long>> = emptyList(),
         override val source: ResolutionSource,
         override val resolutionTimeMs: Long
     ) : ResolvedMediaInfo
@@ -68,7 +70,7 @@ sealed interface ResolvedMediaInfo {
         override val url: String,
         override val title: String,
         val author: String,
-        val thumbnailUrl: String?,
+        override val thumbnailUrl: String?,
         val isPlaylist: Boolean,
         val totalItemCount: Int,
         val items: List<BatchPlaylistItem>,
@@ -82,6 +84,7 @@ sealed interface ResolvedMediaInfo {
         override val url: String,
         override val title: String,
         val itemType: String,
+        override val thumbnailUrl: String? = null,
         override val videoOptions: List<VideoQualityOption>,
         override val audioOptions: List<AudioQualityOption>,
         override val source: ResolutionSource = ResolutionSource.TIER_3_SMART_PRESET,
@@ -105,6 +108,10 @@ data class DownloadRequestSpec(
     val isBatch: Boolean = false,
     val batchUrls: List<String> = emptyList(),
     val batchItems: List<BatchPlaylistItem> = emptyList(),
+    val cutSponsor: Boolean = false,
+    val sponsorSegments: List<Pair<Long, Long>> = emptyList(),
+    val embedSubtitles: Boolean = false,
+    val embedChapters: Boolean = false,
     val poToken: String? = null,
     val visitorData: String? = null,
     val enableAria2c: Boolean = false,

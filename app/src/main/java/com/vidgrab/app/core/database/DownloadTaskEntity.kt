@@ -48,6 +48,10 @@ data class DownloadTaskEntity(
     val outputFileUri: String? = null,
     val outputFilePath: String? = null,
     val errorMessage: String? = null,
+    val cutSponsor: Boolean = false,
+    val sponsorSegmentsJson: String? = null,
+    val embedSubtitles: Boolean = false,
+    val embedChapters: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )

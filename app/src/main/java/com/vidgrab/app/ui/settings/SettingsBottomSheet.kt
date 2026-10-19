@@ -434,22 +434,24 @@ fun SettingsCard(
     icon: ImageVector,
     content: @Composable () -> Unit
 ) {
+    val theme = com.vidgrab.app.ui.theme.AppTheme.colors
+    val accent = com.vidgrab.app.ui.theme.AppTheme.accent
     Surface(
-        color = Color.White,
+        color = theme.cardBg,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+        border = BorderStroke(1.dp, theme.dividerColor),
         shadowElevation = 0.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, contentDescription = null, tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
+                Icon(icon, contentDescription = null, tint = accent.color, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = title,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
-                    color = Color(0xFF241D1B)
+                    color = theme.textPrimary
                 )
             }
             Spacer(modifier = Modifier.height(12.dp))

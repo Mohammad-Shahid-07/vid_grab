@@ -29,11 +29,20 @@ object AdBlockEngine {
         "googlesyndication.com",
         "googleadservices.com",
         "adservice.google.com",
+        "pagead2.googlesyndication.com",
+        "ad.doubleclick.net",
+        "static.doubleclick.net",
+        "googleads.g.doubleclick.net",
+        "googleads",
+        "innovid.com",
+        "2mdn.net",
         "youtube.com/api/stats/ads",
         "youtube.com/pagead/",
         "youtube.com/ptracking",
         "youtube.com/get_midroll_info",
-        "s.youtube.com/api/stats/qoe?adformat="
+        "ads.youtube.com",
+        "adm.youtube.com",
+        "google-analytics.com"
     )
 
     fun init(context: Context) {
