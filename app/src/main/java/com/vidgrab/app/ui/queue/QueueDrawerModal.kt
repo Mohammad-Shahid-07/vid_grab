@@ -1,0 +1,576 @@
+package com.vidgrab.app.ui.queue
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.vidgrab.app.core.database.DownloadTaskEntity
+import com.vidgrab.app.core.database.TaskStatus
+import com.vidgrab.app.core.extractor.formatBytes
+import com.vidgrab.app.core.queue.QueueRepository
+import timber.log.Timber
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun QueueDrawerModal(
+    queueRepository: QueueRepository,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    val allTasks by queueRepository.allTasks.collectAsState(initial = emptyList())
+    val completedTasks by queueRepository.completedTasks.collectAsState(initial = emptyList())
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+
+    val failedTasks = remember(allTasks) { allTasks.filter { it.status == TaskStatus.FAILED } }
+    val pausedTasks = remember(allTasks) { allTasks.filter { it.status == TaskStatus.PAUSED } }
+    val activeAndPendingTasks = remember(allTasks) {
+        allTasks.filter { it.status in listOf(TaskStatus.DOWNLOADING, TaskStatus.MERGING, TaskStatus.EXPANDING, TaskStatus.PENDING) }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = Color(0xFFFAF8F5),
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp)
+                .animateContentSize()
+        ) {
+            // Header: Title and Close button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Downloads",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = Color(0xFF241D1B)
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF7F7875), modifier = Modifier.size(20.dp))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Action Pills Bar: "Pause All" & "Resume All"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color.White,
+                    border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+                    modifier = Modifier.clickable { queueRepository.pauseAll() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Pause, contentDescription = null, tint = Color(0xFF7F7875), modifier = Modifier.size(13.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Pause All", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF241D1B))
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color.White,
+                    border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+                    modifier = Modifier.clickable { queueRepository.resumeAll() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFFE5A93C), modifier = Modifier.size(13.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Resume All", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF241D1B))
+                    }
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                Text(
+                    text = "${allTasks.size} total",
+                    fontSize = 11.sp,
+                    color = Color(0xFF7F7875),
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 3-Segmented Tabs: Downloading, Completed, Paused
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = Color(0xFFF3ECE7),
+                contentColor = Color(0xFFE5A93C),
+                indicator = { tabPositions ->
+                    TabRowDefaults.SecondaryIndicator(
+                        modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                        color = Color(0xFFE5A93C),
+                        height = 3.dp
+                    )
+                },
+                modifier = Modifier.clip(RoundedCornerShape(12.dp))
+            ) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = {
+                        Text(
+                            "Downloading (${activeAndPendingTasks.size + failedTasks.size})",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp
+                        )
+                    }
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = {
+                        Text(
+                            "Completed (${completedTasks.size})",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp
+                        )
+                    }
+                )
+                Tab(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    text = {
+                        Text(
+                            "Paused (${pausedTasks.size})",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp
+                        )
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Tab Content
+            when (selectedTab) {
+                0 -> {
+                    // Downloading & Pending (+ Failed at top)
+                    val count = activeAndPendingTasks.size + failedTasks.size
+                    if (count == 0) {
+                        EmptyQueuePlaceholder("No active or queued downloads")
+                    } else {
+                        LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                            items(failedTasks, key = { it.id }) { task ->
+                                FailedTaskCard(
+                                    task = task,
+                                    onRetry = { queueRepository.retryTask(task.id) },
+                                    onDelete = { queueRepository.deleteTask(task.id) }
+                                )
+                            }
+                            items(activeAndPendingTasks, key = { it.id }) { task ->
+                                ActiveTaskRow(
+                                    task = task,
+                                    onPause = { queueRepository.pauseTask(task.id) },
+                                    onResume = { queueRepository.resumeTask(task.id) },
+                                    onCancel = { queueRepository.cancelTask(task.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+                1 -> {
+                    // Completed
+                    if (completedTasks.isEmpty()) {
+                        EmptyQueuePlaceholder("No completed downloads yet")
+                    } else {
+                        LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                            items(completedTasks, key = { it.id }) { task ->
+                                CompletedTaskRow(
+                                    task = task,
+                                    onOpen = { openMediaFile(context, task.outputFileUri) },
+                                    onDelete = { queueRepository.deleteTask(task.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+                2 -> {
+                    // Paused
+                    if (pausedTasks.isEmpty()) {
+                        EmptyQueuePlaceholder("No paused downloads")
+                    } else {
+                        LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                            items(pausedTasks, key = { it.id }) { task ->
+                                ActiveTaskRow(
+                                    task = task,
+                                    onPause = { },
+                                    onResume = { queueRepository.resumeTask(task.id) },
+                                    onCancel = { queueRepository.deleteTask(task.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ActiveTaskRow(
+    task: DownloadTaskEntity,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Surface(
+        color = Color.White,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Status Pill
+                val statusColor = when (task.status) {
+                    TaskStatus.DOWNLOADING -> Color(0xFFE5A93C)
+                    TaskStatus.MERGING -> Color(0xFF2C6954)
+                    TaskStatus.PAUSED -> Color(0xFF8C827A)
+                    else -> Color(0xFF7F7875)
+                }
+
+                Text(
+                    text = when (task.status) {
+                        TaskStatus.DOWNLOADING -> "DOWNLOADING"
+                        TaskStatus.MERGING -> "MERGING (-c copy)"
+                        TaskStatus.PAUSED -> "PAUSED"
+                        TaskStatus.EXPANDING -> "EXPANDING"
+                        else -> "PENDING"
+                    },
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = statusColor,
+                    modifier = Modifier
+                        .background(statusColor.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                Text(
+                    text = "${task.outputExt.uppercase()}${if (task.targetHeight != null) " • ${task.targetHeight}p" else ""}",
+                    fontSize = 10.sp,
+                    color = Color(0xFF7F7875)
+                )
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Action Buttons: Pause / Resume, Cancel
+                if (task.status == TaskStatus.DOWNLOADING || task.status == TaskStatus.MERGING) {
+                    IconButton(onClick = onPause, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
+                    }
+                } else if (task.status == TaskStatus.PAUSED) {
+                    IconButton(onClick = onResume, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
+                    }
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                IconButton(onClick = onCancel, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Cancel", tint = Color(0xFF7F7875), modifier = Modifier.size(16.dp))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = task.title,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = Color(0xFF241D1B)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Radiant Gold Progress Bar
+            LinearProgressIndicator(
+                progress = { task.progressPercent / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                color = Color(0xFFE5A93C),
+                trackColor = Color(0xFFF3ECE7)
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Speed & ETA
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "${task.progressPercent.toInt()}% • ${task.speedText.ifBlank { "Starting download..." }}",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF5F5B59),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Text(
+                    text = if (task.etaSeconds > 0) "ETA ${task.etaSeconds}s" else "",
+                    fontSize = 11.sp,
+                    color = Color(0xFF7F7875)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun CompletedTaskRow(
+    task: DownloadTaskEntity,
+    onOpen: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        color = Color.White,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(14.dp)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .background(Color(0xFFE5A93C).copy(alpha = 0.12f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFFE5A93C), modifier = Modifier.size(20.dp))
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = task.title,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = Color(0xFF241D1B)
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "${task.outputExt.uppercase()} • ${formatBytes(task.totalBytes)}",
+                    fontSize = 11.sp,
+                    color = Color(0xFF7F7875)
+                )
+            }
+
+            // Open Action
+            IconButton(onClick = onOpen, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.FileOpen, contentDescription = "Open", tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
+            }
+            // Delete Action
+            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFF7F7875), modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun EmptyQueuePlaceholder(text: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 40.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, fontSize = 13.sp, color = Color(0xFF7F7875))
+    }
+}
+
+private fun openMediaFile(context: Context, fileUri: String?) {
+    if (fileUri.isNullOrBlank()) return
+    try {
+        val uri = Uri.parse(fileUri)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, if (fileUri.endsWith(".m4a") || fileUri.endsWith(".opus")) "audio/*" else "video/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Timber.e(e, "Could not open media file URI: %s", fileUri)
+    }
+}
+
+@Composable
+fun FailedTaskCard(
+    task: DownloadTaskEntity,
+    onRetry: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        color = Color(0xFFFFF1F0),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0xFFFFCDD2)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "FAILED",
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFBA1A1A),
+                    modifier = Modifier
+                        .background(Color(0xFFBA1A1A).copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                Text(
+                    text = "${task.outputExt.uppercase()}${if (task.targetHeight != null) " • ${task.targetHeight}p" else ""}",
+                    fontSize = 10.sp,
+                    color = Color(0xFF7F7875)
+                )
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Retry Button
+                IconButton(onClick = onRetry, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Retry",
+                        tint = Color(0xFFBA1A1A),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(4.dp))
+
+                // Delete Button
+                IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        tint = Color(0xFF7F7875),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = task.title,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = Color(0xFF241D1B)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            val errorText = task.errorMessage?.ifBlank { null } ?: "Unknown error occurred during extraction or download."
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF241D1B), RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = errorText,
+                    color = Color(0xFFFF8A80),
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
