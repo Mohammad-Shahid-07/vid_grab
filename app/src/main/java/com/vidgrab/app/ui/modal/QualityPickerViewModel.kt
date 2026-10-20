@@ -28,7 +28,8 @@ sealed interface QualityPickerUiState {
         val addNumberPrefix: Boolean = true,
         val cutSponsor: Boolean = false,
         val embedSubtitles: Boolean = false,
-        val embedChapters: Boolean = false
+        val embedChapters: Boolean = false,
+        val selectedDownloadFolder: String = "Download/VidGrab"
     ) : QualityPickerUiState
     data class Error(val message: String) : QualityPickerUiState
 }
@@ -72,7 +73,22 @@ class QualityPickerViewModel : ViewModel() {
 
     fun selectTab(isAudioOnly: Boolean) {
         val current = _uiState.value as? QualityPickerUiState.Success ?: return
-        _uiState.value = current.copy(isAudioOnlyTab = isAudioOnly)
+        val updatedFolder = if (isAudioOnly && current.selectedDownloadFolder == "Download/VidGrab") {
+            "Music/VidGrab"
+        } else if (!isAudioOnly && current.selectedDownloadFolder == "Music/VidGrab") {
+            "Download/VidGrab"
+        } else {
+            current.selectedDownloadFolder
+        }
+        _uiState.value = current.copy(
+            isAudioOnlyTab = isAudioOnly,
+            selectedDownloadFolder = updatedFolder
+        )
+    }
+
+    fun setDownloadFolder(folder: String) {
+        val current = _uiState.value as? QualityPickerUiState.Success ?: return
+        _uiState.value = current.copy(selectedDownloadFolder = folder)
     }
 
     fun selectVideoHeight(height: Int) {
@@ -179,18 +195,25 @@ class QualityPickerViewModel : ViewModel() {
         } else emptyList()
 
         val totalSelectedDuration = if (isBatch) {
-            rawSelectedItems.sumOf { it.durationSeconds }.takeIf { it > 0 } ?: (rawSelectedItems.size.toLong() * 240L)
+            rawSelectedItems.sumOf { it.durationSeconds }.takeIf { it > 0 }
+                ?: (rawSelectedItems.size.toLong() * (info.durationSeconds.takeIf { it > 0 } ?: 240L))
         } else {
-            (info as? ResolvedMediaInfo.SingleVideo)?.durationSeconds?.takeIf { it > 0 } ?: 240L
+            info.durationSeconds.takeIf { it > 0 } ?: 240L
         }
 
-        val selectedSize = if (isAudio) {
-            val br = state.selectedAudioBitrateKbps.toLong().takeIf { it > 0 } ?: 160L
-            (br * 1000L / 8L) * totalSelectedDuration
+        val selectedSize = if (!isBatch) {
+            if (isAudio) {
+                val match = info.audioOptions.firstOrNull {
+                    it.extension.equals(state.selectedAudioExtension, ignoreCase = true) &&
+                    (state.selectedAudioBitrateKbps <= 0 || it.bitrateKbps == state.selectedAudioBitrateKbps)
+                } ?: info.audioOptions.firstOrNull { it.bitrateKbps == state.selectedAudioBitrateKbps }
+                match?.estimatedBytes?.takeIf { it > 0L } ?: 0L
+            } else {
+                val match = info.videoOptions.firstOrNull { it.height == state.selectedVideoHeight }
+                match?.estimatedTotalBytes?.takeIf { it > 0L } ?: 0L
+            }
         } else {
-            val h = state.selectedVideoHeight
-            val vBr = when (h) { 2160 -> 15000L; 1440 -> 8000L; 1080 -> 4500L; 720 -> 2500L; 480 -> 1200L; 360 -> 700L; 240 -> 400L; else -> 200L }
-            ((vBr + 128L) * 1000L / 8L) * totalSelectedDuration
+            0L
         }
 
         val batchItems = if (state.addNumberPrefix) {
@@ -209,9 +232,25 @@ class QualityPickerViewModel : ViewModel() {
 
         val singleSponsors = (info as? ResolvedMediaInfo.SingleVideo)?.sponsorSegments ?: emptyList()
 
+        val vid = com.vidgrab.app.core.extractor.DualEngineMetadataResolver.extractVideoId(info.url)
+        val cleanUrl = DualEngineMetadataResolver.sanitizeMediaUrl(info.url)
+        val thumb = info.thumbnailUrl?.takeIf { it.isNotBlank() } ?: vid?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" }
+
+        val chosenVideo = info.videoOptions.firstOrNull { it.height == state.selectedVideoHeight }
+        val chosenAudio = if (isAudio) {
+            info.audioOptions.firstOrNull {
+                it.extension.equals(state.selectedAudioExtension, ignoreCase = true) &&
+                (state.selectedAudioBitrateKbps <= 0 || it.bitrateKbps == state.selectedAudioBitrateKbps)
+            } ?: info.audioOptions.firstOrNull { it.bitrateKbps == state.selectedAudioBitrateKbps }
+        } else {
+            info.audioOptions.maxByOrNull { it.bitrateKbps }
+        }
+
         return DownloadRequestSpec(
-            url = info.url,
+            url = cleanUrl,
             title = info.title,
+            author = (info as? ResolvedMediaInfo.SingleVideo)?.author ?: "YouTube",
+            thumbnailUrl = thumb,
             mediaType = if (isAudio) "AUDIO" else "VIDEO",
             targetHeight = if (isAudio) null else state.selectedVideoHeight,
             formatSelector = formatSelector,
@@ -224,10 +263,13 @@ class QualityPickerViewModel : ViewModel() {
             sponsorSegments = singleSponsors,
             embedSubtitles = state.embedSubtitles,
             embedChapters = state.embedChapters,
+            downloadFolder = state.selectedDownloadFolder,
             poToken = WebViewSessionManager.currentPoToken,
             visitorData = WebViewSessionManager.currentVisitorData,
             enableAria2c = state.enableAria2cTurbo,
-            concurrentFragments = 8
+            concurrentFragments = 8,
+            resolvedVideoStreamUrl = if (!isAudio) chosenVideo?.directStreamUrl else null,
+            resolvedAudioStreamUrl = if (isAudio) chosenAudio?.directStreamUrl else (chosenVideo?.matchedAudioStreamUrl ?: chosenAudio?.directStreamUrl)
         )
     }
 }

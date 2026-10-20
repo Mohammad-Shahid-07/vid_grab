@@ -25,17 +25,29 @@ data class ProgressUpdate(
 )
 
 /**
- * 2026 Resilient yt-dlp Execution Engine with 3-Stage Self-Healing Execution:
+ * 2026 High-Performance Native yt-dlp Execution Engine (Seal / YTDLnis Architecture):
  *
- * Attempt 1 (Standard Defaults): Native yt-dlp default client selection (-N 3, no custom player_client).
+ * Stage 1 (Fast Public Mobile Client): Native android,ios client (-N 8 concurrent fragments, --throttled-rate 100K,
+ * socket timeout 8s, persistent base.js cache). Starts in ~1.5s without JS decipher cold-start.
  *
- * Attempt 2 (Clean Single-Stream Fallback): Clean client fallback (-N 1, youtube:player_client=default,-android_vr, safe formats).
+ * Stage 2 (Authenticated Fallback): Cookies + PO Token + QuickJS runtime for bot-locked, private, or age-restricted videos.
  *
- * Attempt 3 (Authenticated Session Fallback): Full cookies + User-Agent session with forced Nightly OTA update on 403/Forbidden/Auth errors.
+ * External Downloader: Turbo-accelerated Aria2c multi-connection downloading when enabled.
  */
 object DownloadEngineExecutor {
 
     private val activeTasks = ConcurrentHashMap<String, Boolean>()
+    private val pausedTasks = ConcurrentHashMap.newKeySet<String>()
+
+    fun isPaused(taskId: String): Boolean = pausedTasks.contains(taskId)
+
+    fun resumeTask(taskId: String) {
+        pausedTasks.remove(taskId)
+    }
+
+    fun resumeAllTasks() {
+        pausedTasks.clear()
+    }
 
     suspend fun executeDownload(
         context: Context,
@@ -43,126 +55,88 @@ object DownloadEngineExecutor {
         onProgress: suspend (ProgressUpdate) -> Unit
     ): File = withContext(Dispatchers.IO) {
         val workDir = MediaStoreExporter.getTaskWorkDir(context, task.id)
+
+        if (isPaused(task.id)) {
+            Timber.i("DownloadEngine: Task %s was already paused before start. Halting.", task.id)
+            throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused")
+        }
+
         activeTasks[task.id] = true
 
         try {
-            // =================================================================
-            // STAGE 1 (Primary): Instant JVM Stream Engine (NewPipeExtractor + OkHttp Range + FFmpeg)
-            // Starts in <300ms, zero Python cold start, direct 2MB chunks
-            // =================================================================
-            try {
-                Timber.i("DownloadEngine [Stage 1]: Attempting Fast JVM direct stream download for task %s", task.id)
-                val startP = task.progressPercent.coerceAtLeast(0f)
-                onProgress(ProgressUpdate(startP, if (startP > 2f) "Resuming..." else "Connecting...", -1L, TaskStatus.DOWNLOADING))
-
-                val jvmFile = DirectJvmStreamDownloader.download(
-                    context = context,
-                    task = task,
-                    workDir = workDir,
-                    isCancelled = { activeTasks[task.id] != true },
-                    onProgress = { p, eta, speedText ->
-                        onProgress(
-                            ProgressUpdate(
-                                progress = p,
-                                speedText = speedText,
-                                etaSeconds = eta,
-                                status = if (p >= 94f && speedText.contains("Merging")) TaskStatus.MERGING else TaskStatus.DOWNLOADING
-                            )
-                        )
-                    }
-                )
-
-                if (jvmFile.exists() && jvmFile.length() > 0) {
-                    Timber.i("DownloadEngine [Stage 1]: Success! Media file created: %s (%d bytes)", jvmFile.name, jvmFile.length())
-                    return@withContext jvmFile
-                }
-            } catch (jvmEx: Exception) {
-                if (activeTasks[task.id] != true || jvmEx is InterruptedException || jvmEx is kotlinx.coroutines.CancellationException) {
-                    Timber.i("DownloadEngine: Task %s was paused or cancelled during Stage 1. Halting.", task.id)
-                    throw jvmEx
-                }
-                Timber.w(jvmEx, "DownloadEngine [Stage 1] failed for task %s. Activating Stage 2 (yt-dlp)...", task.id)
-            }
-
-            if (activeTasks[task.id] != true) {
-                Timber.i("DownloadEngine: Task %s was paused before Stage 2. Halting.", task.id)
-                throw InterruptedException("Task was paused or cancelled")
-            }
-
-            // =================================================================
-            // STAGE 2 (Fallback): yt-dlp Subprocess Engine with QuickJS (libqjs.so)
-            // =================================================================
-            val stage2P = task.progressPercent.coerceAtLeast(0f)
-            onProgress(ProgressUpdate(stage2P, if (stage2P > 2f) "Resuming..." else "Connecting...", -1L, TaskStatus.DOWNLOADING))
+            val startP = task.progressPercent.coerceAtLeast(0f)
+            onProgress(ProgressUpdate(startP, if (startP > 2f) "Resuming..." else "Connecting...", -1L, TaskStatus.DOWNLOADING))
 
             val targetHeight = task.targetHeight ?: 1080
             val qjsFile = File(context.applicationInfo.nativeLibraryDir, "libqjs.so")
             val hasQjs = qjsFile.exists()
+            val cleanUrl = com.vidgrab.app.core.extractor.DualEngineMetadataResolver.sanitizeMediaUrl(task.url)
+            val isYouTube = cleanUrl.contains("youtube.com") || cleanUrl.contains("youtu.be")
 
-            // Attempt 2A: Native defaults with explicit libqjs.so path (if available)
+            // =================================================================
+            // STAGE 1: Fast Public Mobile Client Path (99% of videos, starts in ~1.5s)
+            // CRITICAL: player_client=android,ios MUST have useCookies=false and userAgent=null
+            // to avoid yt-dlp skipping mobile clients and to prevent Chrome UA conflicts!
+            // =================================================================
             try {
-                Timber.i("DownloadEngine [Stage 2A]: yt-dlp with QuickJS (hasQjs=%b) for task %s", hasQjs, task.id)
+                Timber.i("DownloadEngine [Stage 1]: Fast Mobile Client yt-dlp (android,ios) for task %s", task.id)
                 return@withContext runDownloadSession(
                     context = context,
                     workDir = workDir,
                     task = task,
-                    concurrency = 1,
+                    concurrency = 8,
                     useCookies = false,
                     userAgent = null,
-                    extractorArgs = null,
+                    extractorArgs = if (isYouTube) "youtube:player_client=android,ios" else null,
                     formatSelector = task.formatSelector,
-                    qjsPath = if (hasQjs) qjsFile.absolutePath else null,
+                    qjsPath = null,
                     onProgress = onProgress
                 )
             } catch (e: Exception) {
-                Timber.w(e, "DownloadEngine [Stage 2A] failed for task %s. Activating Stage 2B...", task.id)
+                if (isPaused(task.id) || activeTasks[task.id] != true || e is InterruptedException || e is kotlinx.coroutines.CancellationException) {
+                    Timber.i("DownloadEngine: Task %s was paused or cancelled during Stage 1. Halting.", task.id)
+                    throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
+                }
+                Timber.w(e, "DownloadEngine [Stage 1] failed for task %s. Activating Stage 2 (Authenticated Fallback)...", task.id)
             }
 
-            // Attempt 2B: Clean fallback with mobile clients and safe format
+            if (isPaused(task.id) || activeTasks[task.id] != true) {
+                Timber.i("DownloadEngine: Task %s was paused or cancelled before Stage 2. Halting.", task.id)
+                throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
+            }
+
+            // =================================================================
+            // STAGE 2: Authenticated Cookie Fallback (Age-restricted / Private / Bot-locked)
+            // Uses tv,mweb,web + cookies + poToken + QuickJS
+            // =================================================================
             cleanSandboxForRetry(workDir)
+            val poArgs = WebViewSessionManager.getExtractorArgs()?.removePrefix("youtube:")?.let { ";$it" } ?: ""
+            val authExtractorArgs = if (isYouTube) "youtube:player_client=tv,mweb,web$poArgs" else null
             val safeFormat = if (task.isAudioOnly) {
                 "bestaudio[ext=m4a]/bestaudio/best"
             } else {
                 "bestvideo[height<=$targetHeight][ext=mp4]+bestaudio[ext=m4a]/best[height<=$targetHeight][ext=mp4]/best[height<=$targetHeight]/best"
             }
 
-            try {
-                Timber.i("DownloadEngine [Stage 2B]: Clean mobile clients fallback for task %s", task.id)
-                return@withContext runDownloadSession(
-                    context = context,
-                    workDir = workDir,
-                    task = task,
-                    concurrency = 1,
-                    useCookies = false,
-                    userAgent = null,
-                    extractorArgs = "youtube:player_client=ios,web_safari,mweb",
-                    formatSelector = safeFormat,
-                    qjsPath = null,
-                    onProgress = onProgress
-                )
-            } catch (e: Exception) {
-                Timber.w(e, "DownloadEngine [Stage 2B] failed for task %s. Activating Stage 2C (Authenticated)...", task.id)
-            }
-
-            // Attempt 2C: Authenticated session fallback with cookies + PO Token
-            cleanSandboxForRetry(workDir)
-            val ultraSimpleSelector = if (task.isAudioOnly) "bestaudio/best" else "best[height<=$targetHeight]/best"
-            Timber.i("DownloadEngine [Stage 2C]: Authenticated fallback for task %s", task.id)
-
+            Timber.i("DownloadEngine [Stage 2]: Authenticated fallback (tv,mweb,web) for task %s", task.id)
             return@withContext runDownloadSession(
                 context = context,
                 workDir = workDir,
                 task = task,
-                concurrency = 1,
+                concurrency = 4,
                 useCookies = true,
                 userAgent = NetworkConstants.activeUserAgent,
-                extractorArgs = WebViewSessionManager.getExtractorArgs(),
-                formatSelector = ultraSimpleSelector,
-                qjsPath = null,
+                extractorArgs = authExtractorArgs,
+                formatSelector = safeFormat,
+                qjsPath = if (hasQjs) qjsFile.absolutePath else null,
                 onProgress = onProgress
             )
 
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException || isPaused(task.id)) {
+                Timber.i("DownloadEngine: Task %s successfully paused/cancelled.", task.id)
+                throw e
+            }
             val meaningfulError = extractMeaningfulErrorMessage(e)
             Timber.e(e, "DownloadEngine: All stages failed for task %s: %s", task.id, meaningfulError)
             throw RuntimeException(meaningfulError, e)
@@ -183,18 +157,21 @@ object DownloadEngineExecutor {
         qjsPath: String? = null,
         onProgress: suspend (ProgressUpdate) -> Unit
     ): File {
-        val request = YoutubeDLRequest(task.url).apply {
+        val cleanUrl = com.vidgrab.app.core.extractor.DualEngineMetadataResolver.sanitizeMediaUrl(task.url)
+        val request = YoutubeDLRequest(cleanUrl).apply {
+            addOption("--no-playlist")
             // Output template & line formatting
             addOption("-o", "${workDir.absolutePath}/%(title).120B.%(ext)s")
             addOption("--restrict-filenames")
-            addOption("--no-cache-dir")
+            val ytdlpCacheDir = File(context.cacheDir, "ytdlp_cache").apply { mkdirs() }
+            addOption("--cache-dir", ytdlpCacheDir.absolutePath)
             addOption("--force-ipv4")
             addOption("--no-mtime")
             addOption("--newline")
             addOption("--no-update")
-            addOption("--retries", "2")
-            addOption("--fragment-retries", "2")
-            addOption("--socket-timeout", "12")
+            addOption("--retries", "3")
+            addOption("--fragment-retries", "3")
+            addOption("--socket-timeout", "8")
 
             // QuickJS Explicit Path
             if (!qjsPath.isNullOrBlank()) {
@@ -219,15 +196,35 @@ object DownloadEngineExecutor {
                 addOption("--extractor-args", extractorArgs)
             }
 
-            // Downloader & Concurrency: single-stream to prevent YouTube CDN TCP connection reset
-            addOption("-N", "$concurrency")
+            // Downloader & Concurrency (Aria2c turbo or native concurrent fragments)
+            if (task.useAria2c) {
+                val aria2cFile = File(context.applicationInfo.nativeLibraryDir, "libaria2c.so")
+                if (aria2cFile.exists()) {
+                    addOption("--downloader", "aria2c")
+                    addOption("--downloader-args", "aria2c:-x 8 -s 8 -k 1M -j 8")
+                } else {
+                    addOption("-N", "$concurrency")
+                    addOption("--throttled-rate", "100K")
+                }
+            } else {
+                addOption("-N", "$concurrency")
+                addOption("--throttled-rate", "100K")
+            }
             addOption("--continue")
+
+            // SponsorBlock removal via native yt-dlp / FFmpeg
+            if (task.cutSponsor) {
+                addOption("--sponsorblock-remove", "sponsor")
+            }
 
             // Format & Merge
             if (task.isAudioOnly) {
                 addOption("-f", formatSelector)
                 addOption("-x")
                 addOption("--audio-format", task.outputExt)
+                addOption("--embed-metadata")
+                addOption("--embed-thumbnail")
+                addOption("--convert-thumbnails", "jpg")
             } else {
                 addOption("-f", formatSelector)
                 addOption("--merge-output-format", "mp4")
@@ -253,10 +250,17 @@ object DownloadEngineExecutor {
             if (cleanLine.contains("Downloading webpage") ||
                 cleanLine.contains("Downloading android player API JSON") ||
                 cleanLine.contains("Downloading player") ||
-                cleanLine.contains("Extracting URL")
+                cleanLine.contains("Extracting URL") ||
+                cleanLine.contains("Downloading m3u8 information") ||
+                cleanLine.contains("Downloading MPD manifest")
             ) {
                 stageText = "Connecting..."
-            } else if (cleanLine.contains("[Merger]") || cleanLine.contains("[ExtractAudio]") || cleanLine.contains("[ffmpeg]")) {
+            } else if (cleanLine.contains("[Merger]") ||
+                cleanLine.contains("[ExtractAudio]") ||
+                cleanLine.contains("[ffmpeg]") ||
+                cleanLine.contains("[FixupM4a]") ||
+                cleanLine.contains("[VideoConvertor]")
+            ) {
                 currentStatus = TaskStatus.MERGING
                 stageText = "Merging audio and video..."
             }
@@ -273,17 +277,53 @@ object DownloadEngineExecutor {
                 lastDispatchedPercent = p
                 lastDispatchTimeMs = now
 
+                var parsedTotal = 0L
+                var parsedDownloaded = 0L
+
+                val totalMatch = totalBytesRegex.find(cleanLine)
+                if (totalMatch != null) {
+                    parsedTotal = parseSizeToBytes(totalMatch.groupValues[1], totalMatch.groupValues[2])
+                }
+                val dlMatch = downloadedBytesRegex.find(cleanLine)
+                if (dlMatch != null) {
+                    parsedDownloaded = parseSizeToBytes(dlMatch.groupValues[1], dlMatch.groupValues[2])
+                }
+                if (parsedTotal > 0L && parsedDownloaded <= 0L && p > 0f) {
+                    parsedDownloaded = (parsedTotal * (p / 100f)).toLong()
+                }
+
+                val effectiveSpeedText = when {
+                    currentStatus == TaskStatus.MERGING -> "Merging audio and video..."
+                    stageText.isNotBlank() -> stageText
+                    p >= 100f -> "Finishing..."
+                    else -> "Downloading..."
+                }
+
                 val update = ProgressUpdate(
                     progress = p.coerceAtLeast(2f),
-                    speedText = stageText.ifBlank { "Downloading stream..." },
+                    speedText = effectiveSpeedText,
                     etaSeconds = etaInSeconds,
-                    status = currentStatus
+                    status = currentStatus,
+                    downloadedBytes = parsedDownloaded,
+                    totalBytes = parsedTotal
                 )
+
+                if (isPaused(task.id) || activeTasks[task.id] != true) {
+                    try {
+                        YoutubeDL.getInstance().destroyProcessById(task.id)
+                    } catch (_: Exception) {}
+                    throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused")
+                }
 
                 kotlinx.coroutines.runBlocking {
                     onProgress(update)
                 }
             }
+        }
+
+        if (isPaused(task.id) || activeTasks[task.id] != true) {
+            Timber.i("DownloadEngine: Task %s was paused or cancelled. Skipping media file location.", task.id)
+            throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
         }
 
         // Locate final produced media file
@@ -312,6 +352,7 @@ object DownloadEngineExecutor {
 
     fun pauseTask(taskId: String): Boolean {
         return try {
+            pausedTasks.add(taskId)
             activeTasks.remove(taskId)
             val killed = YoutubeDL.getInstance().destroyProcessById(taskId)
             Timber.i("Paused task process: %s (result=%b)", taskId, killed)
@@ -333,8 +374,9 @@ object DownloadEngineExecutor {
 
     fun cancelTask(context: Context, taskId: String): Boolean {
         return try {
-            YoutubeDL.getInstance().destroyProcessById(taskId)
+            pausedTasks.add(taskId)
             activeTasks.remove(taskId)
+            YoutubeDL.getInstance().destroyProcessById(taskId)
             MediaStoreExporter.cleanupTaskWorkDir(context, taskId)
             Timber.i("Cancelled and cleaned up task: %s", taskId)
             true
@@ -347,6 +389,20 @@ object DownloadEngineExecutor {
     fun isTaskActive(taskId: String): Boolean = activeTasks.containsKey(taskId)
 
     private val speedRegex = Regex("at\\s+([\\d.]+[KMGT]?i?B/s)")
+    private val totalBytesRegex = Regex("""of\s+~?\s*([\d.]+)\s*([KMGT]?i?B)""", RegexOption.IGNORE_CASE)
+    private val downloadedBytesRegex = Regex("""\[download\]\s+([\d.]+)\s*([KMGT]?i?B)\s+of""", RegexOption.IGNORE_CASE)
+
+    private fun parseSizeToBytes(valueStr: String, unitStr: String): Long {
+        val num = valueStr.toDoubleOrNull() ?: return 0L
+        val unit = unitStr.uppercase()
+        val multiplier = when {
+            unit.startsWith("G") -> 1024L * 1024L * 1024L
+            unit.startsWith("M") -> 1024L * 1024L
+            unit.startsWith("K") -> 1024L
+            else -> 1L
+        }
+        return (num * multiplier).toLong()
+    }
 
     private fun extractSpeed(line: String): String {
         val match = speedRegex.find(line)

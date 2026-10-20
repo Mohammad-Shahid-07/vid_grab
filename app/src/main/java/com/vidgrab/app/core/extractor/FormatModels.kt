@@ -15,7 +15,9 @@ data class VideoQualityOption(
     val vcodec: String = "H.264",
     val container: String = "mp4",
     val estimatedTotalBytes: Long = 0L,
-    val formatSelector: String
+    val formatSelector: String,
+    val directStreamUrl: String? = null,
+    val matchedAudioStreamUrl: String? = null
 ) {
     val formattedSize: String
         get() = formatBytes(estimatedTotalBytes)
@@ -27,7 +29,8 @@ data class AudioQualityOption(
     val acodec: String,
     val bitrateKbps: Int,
     val estimatedBytes: Long = 0L,
-    val formatSelector: String
+    val formatSelector: String,
+    val directStreamUrl: String? = null
 ) {
     val formattedSize: String
         get() = formatBytes(estimatedBytes)
@@ -50,13 +53,14 @@ sealed interface ResolvedMediaInfo {
     val videoOptions: List<VideoQualityOption>
     val audioOptions: List<AudioQualityOption>
     val thumbnailUrl: String?
+    val durationSeconds: Long
 
     data class SingleVideo(
         val videoId: String,
         override val url: String,
         override val title: String,
         val author: String,
-        val durationSeconds: Long,
+        override val durationSeconds: Long,
         override val thumbnailUrl: String?,
         override val videoOptions: List<VideoQualityOption>,
         override val audioOptions: List<AudioQualityOption>,
@@ -78,12 +82,16 @@ sealed interface ResolvedMediaInfo {
         override val audioOptions: List<AudioQualityOption>,
         override val source: ResolutionSource,
         override val resolutionTimeMs: Long
-    ) : ResolvedMediaInfo
+    ) : ResolvedMediaInfo {
+        override val durationSeconds: Long
+            get() = items.filter { it.isSelected }.sumOf { it.durationSeconds }
+    }
 
     data class FallbackPreset(
         override val url: String,
         override val title: String,
         val itemType: String,
+        override val durationSeconds: Long = 0L,
         override val thumbnailUrl: String? = null,
         override val videoOptions: List<VideoQualityOption>,
         override val audioOptions: List<AudioQualityOption>,
@@ -100,6 +108,7 @@ data class DownloadRequestSpec(
     val url: String,
     val title: String,
     val author: String = "YouTube",
+    val thumbnailUrl: String? = null,
     val mediaType: String, // "VIDEO", "AUDIO", "PLAYLIST", "CHANNEL"
     val targetHeight: Int? = null,
     val formatSelector: String,
@@ -112,21 +121,24 @@ data class DownloadRequestSpec(
     val sponsorSegments: List<Pair<Long, Long>> = emptyList(),
     val embedSubtitles: Boolean = false,
     val embedChapters: Boolean = false,
+    val downloadFolder: String? = null,
     val poToken: String? = null,
     val visitorData: String? = null,
     val enableAria2c: Boolean = false,
     val concurrentFragments: Int = 8,
+    val resolvedVideoStreamUrl: String? = null,
+    val resolvedAudioStreamUrl: String? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 
 fun formatBytes(bytes: Long): String {
-    if (bytes <= 0L) return "Unknown size"
+    if (bytes <= 0L) return ""
     val kb = bytes / 1024.0
     val mb = kb / 1024.0
     val gb = mb / 1024.0
     return when {
-        gb >= 1.0 -> String.format("%.2f GB", gb)
-        mb >= 1.0 -> String.format("%.1f MB", mb)
-        else -> String.format("%.0f KB", kb)
+        gb >= 1.0 -> String.format(java.util.Locale.US, "%.2f GB", gb)
+        mb >= 1.0 -> String.format(java.util.Locale.US, "%.1f MB", mb)
+        else -> String.format(java.util.Locale.US, "%.0f KB", kb)
     }
 }

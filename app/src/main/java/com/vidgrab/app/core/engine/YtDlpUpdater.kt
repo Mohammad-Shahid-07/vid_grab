@@ -23,7 +23,7 @@ object YtDlpUpdater {
     private const val PREFS_NAME = "vidgrab_engine_prefs"
     private const val KEY_LAST_UPDATED = "last_updated_epoch_ms"
     private const val KEY_CACHED_VERSION = "cached_version"
-    private const val THREE_DAYS_MS = 3L * 24 * 3600 * 1000L
+    private const val ONE_DAY_MS = 24 * 3600 * 1000L
 
     private val updateMutex = Mutex()
     private val _updateState = MutableStateFlow(YtDlpUpdateState())
@@ -64,7 +64,7 @@ object YtDlpUpdater {
             }
 
             val hasValidVersion = !currentVer.isNullOrBlank()
-            val isOld = lastUpdated == 0L || (now - lastUpdated) > THREE_DAYS_MS
+            val isOld = lastUpdated == 0L || (now - lastUpdated) > ONE_DAY_MS
             val needsUpdate = force || !hasValidVersion || isOld
 
             Timber.i("YtDlpUpdater: Version check - current='%s', force=%b, needsUpdate=%b", currentVer, force, needsUpdate)

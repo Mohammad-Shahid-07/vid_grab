@@ -32,9 +32,8 @@ object FormatSelectorBuilder {
     /**
      * Standard 2026 resolution presets for Tier 3 fallback and default displays.
      */
-    fun buildStandardPresets(estimatedDurationSec: Long = 240L): Pair<List<VideoQualityOption>, List<AudioQualityOption>> {
-        val audioBytes = (128L * 1000L / 8L) * estimatedDurationSec
-
+    fun buildStandardPresets(estimatedDurationSec: Long = 0L): Pair<List<VideoQualityOption>, List<AudioQualityOption>> {
+        val dur = if (estimatedDurationSec > 0L) estimatedDurationSec else 180L
         val videoPresets = listOf(
             VideoQualityOption(
                 height = 1080,
@@ -42,7 +41,7 @@ object FormatSelectorBuilder {
                 fps = 60,
                 vcodec = "H.264",
                 container = "mp4",
-                estimatedTotalBytes = ((4500L * 1000L / 8L) * estimatedDurationSec) + audioBytes,
+                estimatedTotalBytes = ((2500000L + 128000L) * dur) / 8L,
                 formatSelector = buildVideoSelector(1080)
             ),
             VideoQualityOption(
@@ -51,7 +50,7 @@ object FormatSelectorBuilder {
                 fps = 60,
                 vcodec = "H.264",
                 container = "mp4",
-                estimatedTotalBytes = ((2500L * 1000L / 8L) * estimatedDurationSec) + audioBytes,
+                estimatedTotalBytes = ((1200000L + 128000L) * dur) / 8L,
                 formatSelector = buildVideoSelector(720)
             ),
             VideoQualityOption(
@@ -60,7 +59,7 @@ object FormatSelectorBuilder {
                 fps = 30,
                 vcodec = "H.264",
                 container = "mp4",
-                estimatedTotalBytes = ((1200L * 1000L / 8L) * estimatedDurationSec) + audioBytes,
+                estimatedTotalBytes = ((650000L + 128000L) * dur) / 8L,
                 formatSelector = buildVideoSelector(480)
             ),
             VideoQualityOption(
@@ -69,7 +68,7 @@ object FormatSelectorBuilder {
                 fps = 30,
                 vcodec = "H.264",
                 container = "mp4",
-                estimatedTotalBytes = ((700L * 1000L / 8L) * estimatedDurationSec) + audioBytes,
+                estimatedTotalBytes = ((400000L + 128000L) * dur) / 8L,
                 formatSelector = buildVideoSelector(360)
             ),
             VideoQualityOption(
@@ -78,7 +77,7 @@ object FormatSelectorBuilder {
                 fps = 30,
                 vcodec = "H.264",
                 container = "mp4",
-                estimatedTotalBytes = ((400L * 1000L / 8L) * estimatedDurationSec) + audioBytes,
+                estimatedTotalBytes = ((220000L + 128000L) * dur) / 8L,
                 formatSelector = buildVideoSelector(240)
             ),
             VideoQualityOption(
@@ -87,35 +86,59 @@ object FormatSelectorBuilder {
                 fps = 30,
                 vcodec = "H.264",
                 container = "mp4",
-                estimatedTotalBytes = ((200L * 1000L / 8L) * estimatedDurationSec) + audioBytes,
+                estimatedTotalBytes = ((110000L + 128000L) * dur) / 8L,
                 formatSelector = buildVideoSelector(144)
             )
         )
 
         val audioPresets = listOf(
             AudioQualityOption(
-                label = "High Quality Audio (AAC / M4A)",
+                label = "M4A High Quality (160k AAC)",
                 extension = "m4a",
                 acodec = "AAC",
                 bitrateKbps = 160,
-                estimatedBytes = (160L * 1000L / 8L) * estimatedDurationSec,
+                estimatedBytes = (160000L * dur) / 8L,
                 formatSelector = buildAudioSelector("m4a")
             ),
             AudioQualityOption(
-                label = "High Efficiency Audio (Opus)",
-                extension = "opus",
-                acodec = "Opus",
-                bitrateKbps = 160,
-                estimatedBytes = (160L * 1000L / 8L) * estimatedDurationSec,
-                formatSelector = buildAudioSelector("opus")
-            ),
-            AudioQualityOption(
-                label = "Compact Audio (M4A 128kbps)",
+                label = "M4A Standard (128k AAC)",
                 extension = "m4a",
                 acodec = "AAC",
                 bitrateKbps = 128,
-                estimatedBytes = (128L * 1000L / 8L) * estimatedDurationSec,
+                estimatedBytes = (128000L * dur) / 8L,
                 formatSelector = buildAudioSelector("m4a")
+            ),
+            AudioQualityOption(
+                label = "Opus High Efficiency (160k)",
+                extension = "opus",
+                acodec = "Opus",
+                bitrateKbps = 160,
+                estimatedBytes = (160000L * dur) / 8L,
+                formatSelector = buildAudioSelector("opus")
+            ),
+            AudioQualityOption(
+                label = "Opus Compact (70k)",
+                extension = "opus",
+                acodec = "Opus",
+                bitrateKbps = 70,
+                estimatedBytes = (70000L * dur) / 8L,
+                formatSelector = buildAudioSelector("opus")
+            ),
+            AudioQualityOption(
+                label = "MP3 Universal (192k)",
+                extension = "mp3",
+                acodec = "MP3",
+                bitrateKbps = 192,
+                estimatedBytes = (192000L * dur) / 8L,
+                formatSelector = buildAudioSelector("mp3")
+            ),
+            AudioQualityOption(
+                label = "FLAC Lossless Audio",
+                extension = "flac",
+                acodec = "FLAC",
+                bitrateKbps = 320,
+                estimatedBytes = (320000L * dur) / 8L,
+                formatSelector = buildAudioSelector("flac")
             )
         )
 

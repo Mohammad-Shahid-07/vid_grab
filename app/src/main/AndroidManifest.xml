@@ -83,6 +83,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Notification Actions Receiver for Pause, Resume, and Cancel -->
+        <receiver
+            android:name=".core.receiver.DownloadActionReceiver"
+            android:exported="false" />
+
     </application>
 
 </manifest>

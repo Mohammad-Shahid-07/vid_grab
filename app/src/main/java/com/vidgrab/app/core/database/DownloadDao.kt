@@ -23,8 +23,7 @@ interface DownloadDao {
                 WHEN 'COMPLETED' THEN 7 
                 ELSE 8 
             END ASC, 
-            updatedAt DESC, 
-            createdAt DESC
+            createdAt ASC
     """)
     fun getAllTasksFlow(): Flow<List<DownloadTaskEntity>>
 
@@ -38,7 +37,6 @@ interface DownloadDao {
                 WHEN 'EXPANDING' THEN 3 
                 ELSE 4 
             END ASC, 
-            updatedAt DESC, 
             createdAt ASC
     """)
     fun getActiveTasksFlow(): Flow<List<DownloadTaskEntity>>

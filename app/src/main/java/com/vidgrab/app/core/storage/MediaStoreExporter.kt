@@ -73,39 +73,57 @@ object MediaStoreExporter {
         sourceFile: File,
         title: String,
         isAudioOnly: Boolean,
-        fallbackExt: String
+        fallbackExt: String,
+        targetFolder: String? = null
     ): ExportResult {
         // Detect actual extension produced by yt-dlp (e.g. .mkv or .webm if mp4 merge failed)
         val actualExt = sourceFile.extension.ifBlank { fallbackExt }
         val sanitizedTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(120)
         val extSuffix = if (actualExt.isNotBlank()) ".$actualExt" else ""
-        val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "VidGrab")
+
+        val effectiveFolder = targetFolder?.trim('/')?.takeIf { it.isNotBlank() } ?: (if (isAudioOnly) "Music/VidGrab" else "Download/VidGrab")
+        val baseDirType = if (effectiveFolder.startsWith("Music", ignoreCase = true)) {
+            Environment.DIRECTORY_MUSIC
+        } else if (effectiveFolder.startsWith("Movies", ignoreCase = true)) {
+            Environment.DIRECTORY_MOVIES
+        } else {
+            Environment.DIRECTORY_DOWNLOADS
+        }
+        val subName = effectiveFolder.substringAfter('/', "VidGrab")
+
+        val publicDir = File(Environment.getExternalStoragePublicDirectory(baseDirType), subName)
+        if (!publicDir.exists()) publicDir.mkdirs()
 
         var fileName = "$sanitizedTitle$extSuffix"
-        if (publicDir.exists()) {
-            var counter = 1
-            while (File(publicDir, fileName).exists()) {
-                fileName = "$sanitizedTitle ($counter)$extSuffix"
-                counter++
-            }
+        var counter = 1
+        while (File(publicDir, fileName).exists()) {
+            fileName = "$sanitizedTitle ($counter)$extSuffix"
+            counter++
         }
 
         val mimeType = resolveMimeType(actualExt, isAudioOnly)
-        val relativeSubDir = "${Environment.DIRECTORY_DOWNLOADS}/VidGrab"
+        val relativeSubDir = "$baseDirType/$subName"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 val resolver = context.contentResolver
                 val contentValues = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                    put(MediaStore.Downloads.MIME_TYPE, mimeType)
-                    put(MediaStore.Downloads.RELATIVE_PATH, relativeSubDir)
-                    put(MediaStore.Downloads.IS_PENDING, 1)
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, relativeSubDir)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
 
-                val collectionUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                val collectionUri = if (baseDirType == Environment.DIRECTORY_MUSIC) {
+                    MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                } else if (baseDirType == Environment.DIRECTORY_MOVIES) {
+                    MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                } else {
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                }
+
                 val itemUri = resolver.insert(collectionUri, contentValues)
-                    ?: throw IllegalStateException("Failed to create MediaStore entry in Downloads/VidGrab")
+                    ?: throw IllegalStateException("Failed to create MediaStore entry in $relativeSubDir")
 
                 resolver.openOutputStream(itemUri)?.use { outStream ->
                     FileInputStream(sourceFile).use { inStream ->
@@ -114,7 +132,7 @@ object MediaStoreExporter {
                 } ?: throw IllegalStateException("Could not open output stream for MediaStore URI: $itemUri")
 
                 contentValues.clear()
-                contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
+                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 resolver.update(itemUri, contentValues, null, null)
 
                 val displayPath = "/storage/emulated/0/$relativeSubDir/$fileName"
@@ -126,11 +144,11 @@ object MediaStoreExporter {
                     displayPath = displayPath
                 )
             } catch (e: Exception) {
-                Timber.w(e, "MediaStore.Downloads export failed; executing fail-safe legacy export")
-                return exportViaDirectFilesystem(context, sourceFile, fileName, mimeType)
+                Timber.w(e, "MediaStore export failed; executing fail-safe legacy export")
+                return exportViaDirectFilesystem(context, sourceFile, fileName, mimeType, publicDir)
             }
         } else {
-            return exportViaDirectFilesystem(context, sourceFile, fileName, mimeType)
+            return exportViaDirectFilesystem(context, sourceFile, fileName, mimeType, publicDir)
         }
     }
 
@@ -138,9 +156,9 @@ object MediaStoreExporter {
         context: Context,
         sourceFile: File,
         fileName: String,
-        mimeType: String
+        mimeType: String,
+        publicDir: File
     ): ExportResult {
-        val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "VidGrab")
         if (!publicDir.exists()) publicDir.mkdirs()
 
         var targetFile = File(publicDir, fileName)

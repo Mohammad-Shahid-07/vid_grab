@@ -247,6 +247,7 @@ object YouTubeJsScripts {
                             sanitizePlayerResponse(data);
 
                             if (data && data.videoDetails && data.videoDetails.videoId) {
+                                window.__vidgrabLatestPlayerResponse = data;
                                 if (window.VidGrabBridge && window.VidGrabBridge.onPlayerResponse) {
                                     window.VidGrabBridge.onPlayerResponse(data.videoDetails.videoId, JSON.stringify(data));
                                 }
@@ -295,6 +296,7 @@ object YouTubeJsScripts {
                         extractTokensFromPayload(data);
                         sanitizePlayerResponse(data);
                         if (data && data.videoDetails && data.videoDetails.videoId) {
+                            window.__vidgrabLatestPlayerResponse = data;
                             if (window.VidGrabBridge && window.VidGrabBridge.onPlayerResponse) {
                                 window.VidGrabBridge.onPlayerResponse(data.videoDetails.videoId, JSON.stringify(data));
                             }
@@ -471,15 +473,71 @@ object YouTubeJsScripts {
             var vidMatch = rawUrl.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
             var targetVid = vidMatch ? vidMatch[1] : null;
 
+            var durationSec = 0;
+            try {
+                // 1. Check meta tag itemprop="duration" (Standard ISO 8601 duration on YouTube watch pages, e.g. PT3M45S)
+                var metaDur = document.querySelector('meta[itemprop="duration"]');
+                if (metaDur && metaDur.content) {
+                    var m = metaDur.content.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+                    if (m) {
+                        var h = parseInt(m[1], 10) || 0;
+                        var min = parseInt(m[2], 10) || 0;
+                        var s = parseInt(m[3], 10) || 0;
+                        durationSec = (h * 3600) + (min * 60) + s;
+                    }
+                }
+
+                // 2. Check HTML5 video element on watch or shorts page
+                if (durationSec <= 0 && isWatchPage) {
+                    var videoEl = document.querySelector('video.html5-main-video') || document.querySelector('video');
+                    if (videoEl && isFinite(videoEl.duration) && videoEl.duration > 0) {
+                        durationSec = Math.round(videoEl.duration);
+                    }
+                }
+
+                // 3. Check ytInitialPlayerResponse if videoId matches
+                if (durationSec <= 0 && window.ytInitialPlayerResponse && window.ytInitialPlayerResponse.videoDetails) {
+                    if (!targetVid || window.ytInitialPlayerResponse.videoDetails.videoId === targetVid) {
+                        durationSec = parseInt(window.ytInitialPlayerResponse.videoDetails.lengthSeconds, 10) || 0;
+                    }
+                }
+
+                // 4. Check duration badges or time status overlays in targetNode
+                if (durationSec <= 0 && targetNode) {
+                    var badgeEl = targetNode.querySelector('.badge-shape-wiz__text, ytd-thumbnail-overlay-time-status-renderer, [class*="time-status"], [class*="duration"], .media-item-duration, ytm-thumbnail-overlay-time-status-renderer, span[role="text"]');
+                    if (badgeEl && badgeEl.innerText) {
+                        var parts = badgeEl.innerText.trim().split(':').map(function(p) { return parseInt(p, 10) || 0; });
+                        if (parts.length === 2) {
+                            durationSec = (parts[0] * 60) + parts[1];
+                        } else if (parts.length === 3) {
+                            durationSec = (parts[0] * 3600) + (parts[1] * 60) + parts[2];
+                        }
+                    }
+                }
+            } catch (err) {}
+
+            var cleanUrl = rawUrl;
+            if (targetVid && (rawUrl.indexOf('/watch') !== -1 || rawUrl.indexOf('/shorts/') !== -1 || rawUrl.indexOf('youtu.be/') !== -1)) {
+                cleanUrl = 'https://www.youtube.com/watch?v=' + targetVid;
+            }
+
             var inlinePlayerJson = '';
-            if (targetVid && window.ytInitialPlayerResponse && window.ytInitialPlayerResponse.videoDetails && window.ytInitialPlayerResponse.videoDetails.videoId === targetVid && window.ytInitialPlayerResponse.streamingData) {
+            var candidate = null;
+            if (targetVid) {
+                if (window.__vidgrabLatestPlayerResponse && window.__vidgrabLatestPlayerResponse.videoDetails && window.__vidgrabLatestPlayerResponse.videoDetails.videoId === targetVid && window.__vidgrabLatestPlayerResponse.streamingData) {
+                    candidate = window.__vidgrabLatestPlayerResponse;
+                } else if (window.ytInitialPlayerResponse && window.ytInitialPlayerResponse.videoDetails && window.ytInitialPlayerResponse.videoDetails.videoId === targetVid && window.ytInitialPlayerResponse.streamingData) {
+                    candidate = window.ytInitialPlayerResponse;
+                }
+            }
+            if (candidate) {
                 try {
-                    inlinePlayerJson = JSON.stringify(window.ytInitialPlayerResponse);
+                    inlinePlayerJson = JSON.stringify(candidate);
                 } catch (err) {}
             }
 
             if (window.VidGrabBridge && window.VidGrabBridge.onDownloadClicked) {
-                window.VidGrabBridge.onDownloadClicked(rawUrl, itemType, title, inlinePlayerJson);
+                window.VidGrabBridge.onDownloadClicked(cleanUrl, itemType, title, inlinePlayerJson, durationSec);
             }
         }
 

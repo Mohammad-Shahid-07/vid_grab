@@ -19,6 +19,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -26,16 +29,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -80,11 +88,14 @@ fun QualityPickerBottomSheet(
             dragHandle = null,
             scrimColor = Color.Black.copy(alpha = 0.55f)
         ) {
+            val configuration = LocalConfiguration.current
+            val maxSheetHeight = (configuration.screenHeightDp * 0.88f).dp
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp)
                     .padding(bottom = 20.dp)
+                    .heightIn(max = maxSheetHeight)
                     .animateContentSize(),
                 color = theme.sheetBg,
                 shape = RoundedCornerShape(26.dp),
@@ -109,6 +120,7 @@ fun QualityPickerBottomSheet(
                             onToggleEmbedChapters = { enabled -> viewModel.toggleEmbedChapters(enabled) },
                             onMoveItemUp = { index -> viewModel.moveBatchItemUp(index) },
                             onMoveItemDown = { index -> viewModel.moveBatchItemDown(index) },
+                            onDownloadFolderSelected = { folder -> viewModel.setDownloadFolder(folder) },
                             onStartDownload = {
                                 viewModel.buildDownloadRequestSpec()?.let { spec ->
                                     viewModel.dismiss()
@@ -171,6 +183,7 @@ fun SuccessContentView(
     onToggleEmbedChapters: (Boolean) -> Unit,
     onMoveItemUp: (Int) -> Unit,
     onMoveItemDown: (Int) -> Unit,
+    onDownloadFolderSelected: (String) -> Unit,
     onStartDownload: () -> Unit
 ) {
     val info = state.mediaInfo
@@ -184,30 +197,32 @@ fun SuccessContentView(
 
     val totalSelectedDurationSec = if (isBatch) {
         selectedPlaylistItems.sumOf { it.durationSeconds }.takeIf { it > 0 }
-            ?: (state.selectedBatchUrls.size.toLong() * 240L)
+            ?: (state.selectedBatchUrls.size.toLong() * (info.durationSeconds.takeIf { it > 0 } ?: 240L))
     } else {
-        (info as? ResolvedMediaInfo.SingleVideo)?.durationSeconds?.takeIf { it > 0 } ?: 240L
+        info.durationSeconds.takeIf { it > 0 } ?: 240L
     }
 
     fun calculateVideoSizeText(height: Int): String {
-        val vBr = when (height) {
-            2160 -> 15000L
-            1440 -> 8000L
-            1080 -> 4500L
-            720 -> 2500L
-            480 -> 1200L
-            360 -> 700L
-            240 -> 400L
-            else -> 200L
+        if (!isBatch) {
+            val match = info.videoOptions.firstOrNull { it.height == height }
+            if (match != null && match.estimatedTotalBytes > 0L) {
+                return match.formattedSize
+            }
         }
-        val bytes = ((vBr + 128L) * 1000L / 8L) * totalSelectedDurationSec
-        return formatBytes(bytes)
+        return ""
     }
 
-    fun calculateAudioSizeText(bitrateKbps: Int): String {
-        val br = bitrateKbps.toLong().takeIf { it > 0 } ?: 160L
-        val bytes = (br * 1000L / 8L) * totalSelectedDurationSec
-        return formatBytes(bytes)
+    fun calculateAudioSizeText(extension: String = "", bitrateKbps: Int): String {
+        if (!isBatch) {
+            val match = info.audioOptions.firstOrNull {
+                (extension.isBlank() || it.extension.equals(extension, ignoreCase = true)) &&
+                (bitrateKbps <= 0 || it.bitrateKbps == bitrateKbps)
+            } ?: info.audioOptions.firstOrNull { it.bitrateKbps == bitrateKbps }
+            if (match != null && match.estimatedBytes > 0L) {
+                return match.formattedSize
+            }
+        }
+        return ""
     }
 
     Column(
@@ -293,10 +308,17 @@ fun SuccessContentView(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        // 3. 3-Column Quality Selector Grid with Dynamic Sizes
-        if (!state.isAudioOnlyTab) {
+        // Middle Scrollable Body (prevents overflow and enables smooth scrolling)
+        Column(
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+        ) {
+            // 3. 3-Column Quality Selector Grid with Dynamic Sizes
+            if (!state.isAudioOnlyTab) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -309,10 +331,22 @@ fun SuccessContentView(
                         rowOptions.forEach { option ->
                             val isSelected = option.height == state.selectedVideoHeight
                             val sizeLabel = if (isBatch) calculateVideoSizeText(option.height) else option.formattedSize
+                            val qualityBadge = when (option.height) {
+                                2160 -> "4K UHD"
+                                1440 -> "2K QHD"
+                                1080 -> "Full HD"
+                                720 -> "HD"
+                                480 -> "Standard"
+                                360 -> "Medium"
+                                240 -> "Compact"
+                                144 -> "Data Saver"
+                                else -> "${option.height}p"
+                            }
+                            val cardSubtitle = if (sizeLabel.isNotBlank()) sizeLabel else qualityBadge
                             Box(modifier = Modifier.weight(1f)) {
                                 FloatingQualityGridCard(
                                     title = "${option.height}p",
-                                    sizeText = sizeLabel,
+                                    sizeText = cardSubtitle,
                                     isSelected = isSelected,
                                     onClick = {
                                         onVideoHeightSelected(option.height)
@@ -328,11 +362,14 @@ fun SuccessContentView(
                 }
             }
         } else {
+            val distinctAudios = remember(info.audioOptions) {
+                info.audioOptions.distinctBy { "${it.extension.lowercase()}_${it.bitrateKbps}" }
+            }
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                info.audioOptions.chunked(3).forEach { rowOptions ->
+                distinctAudios.chunked(3).forEach { rowOptions ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -340,11 +377,14 @@ fun SuccessContentView(
                         rowOptions.forEach { audio ->
                             val isSelected = audio.extension == state.selectedAudioExtension &&
                                     audio.bitrateKbps == state.selectedAudioBitrateKbps
-                            val sizeLabel = if (isBatch) calculateAudioSizeText(audio.bitrateKbps) else audio.formattedSize
+                            val sizeLabel = if (isBatch) calculateAudioSizeText(audio.extension, audio.bitrateKbps) else audio.formattedSize
+                            val audioBadge = "${audio.acodec} ${if (audio.bitrateKbps > 0) "${audio.bitrateKbps}k" else ""}".trim()
+                            val cardSubtitle = if (sizeLabel.isNotBlank()) sizeLabel else audioBadge
+                            val audioTitle = "${audio.extension.uppercase()} ${if (audio.bitrateKbps > 0) "${audio.bitrateKbps}k" else ""}".trim()
                             Box(modifier = Modifier.weight(1f)) {
                                 FloatingQualityGridCard(
-                                    title = if (audio.bitrateKbps > 0) "${audio.bitrateKbps}k" else audio.extension.uppercase(),
-                                    sizeText = sizeLabel,
+                                    title = audioTitle,
+                                    sizeText = cardSubtitle,
                                     isSelected = isSelected,
                                     onClick = {
                                         onAudioSelected(audio.extension, audio.bitrateKbps)
@@ -391,15 +431,15 @@ fun SuccessContentView(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Vertically Scrollable Playlist List with Unified Circular Selection Pill & Drag Handle
-            LazyColumn(
+            // Seamless Playlist List with Unified Circular Selection Pill & Drag Handle
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 140.dp, max = 240.dp)
                     .background(theme.pillTrackBg, RoundedCornerShape(14.dp))
-                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                itemsIndexed(state.orderedBatchItems, key = { _, item -> item.url }) { index, item ->
+                state.orderedBatchItems.forEachIndexed { index, item ->
                     val checked = state.selectedBatchUrls.contains(item.url)
                     var dragAccumulator by remember { mutableFloatStateOf(0f) }
 
@@ -512,7 +552,19 @@ fun SuccessContentView(
             }
         }
 
-        // 5. Advanced Options Collapsible Card
+        // 5. Download Location Selector Row
+        DownloadLocationPickerRow(
+            selectedFolder = state.selectedDownloadFolder,
+            onFolderSelected = onDownloadFolderSelected,
+            accentColor = accent.color,
+            textColor = theme.textPrimary,
+            subtextColor = theme.textSecondary,
+            trackBg = theme.pillTrackBg
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // 6. Advanced Options Collapsible Card
         var advancedExpanded by remember { mutableStateOf(false) }
         val singleSponsors = (info as? ResolvedMediaInfo.SingleVideo)?.sponsorSegments ?: emptyList()
         val hasSponsors = singleSponsors.isNotEmpty()
@@ -620,16 +672,17 @@ fun SuccessContentView(
                 }
             }
         }
+        } // End of scrollable middle Column
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        // 6. Primary Action CTA Button
+        // 6. Primary Action CTA Button (Sticky at Bottom)
         if (isBatch) {
             val canQueue = state.selectedBatchUrls.isNotEmpty()
             val totalSizeText = if (!state.isAudioOnlyTab) {
                 calculateVideoSizeText(state.selectedVideoHeight)
             } else {
-                calculateAudioSizeText(state.selectedAudioBitrateKbps)
+                calculateAudioSizeText(state.selectedAudioExtension, state.selectedAudioBitrateKbps)
             }
 
             Button(
@@ -659,13 +712,13 @@ fun SuccessContentView(
             val ctaSize = if (!state.isAudioOnlyTab) {
                 calculateVideoSizeText(state.selectedVideoHeight)
             } else {
-                calculateAudioSizeText(state.selectedAudioBitrateKbps)
+                calculateAudioSizeText(state.selectedAudioExtension, state.selectedAudioBitrateKbps)
             }
             val ctaLabel = if (!state.isAudioOnlyTab) {
-                "Download ${state.selectedVideoHeight}p ($ctaSize)"
+                if (ctaSize.isNotBlank()) "Download ${state.selectedVideoHeight}p ($ctaSize)" else "Download ${state.selectedVideoHeight}p"
             } else {
-                val label = if (state.selectedAudioBitrateKbps > 0) "${state.selectedAudioBitrateKbps}k" else state.selectedAudioExtension.uppercase()
-                "Download $label ($ctaSize)"
+                val label = "${state.selectedAudioExtension.uppercase()} ${if (state.selectedAudioBitrateKbps > 0) "${state.selectedAudioBitrateKbps}k" else ""}".trim()
+                if (ctaSize.isNotBlank()) "Download $label ($ctaSize)" else "Download $label"
             }
 
             Button(
@@ -810,5 +863,158 @@ fun ErrorView(message: String, onDismiss: () -> Unit) {
         ) {
             Text("Close", color = Color.White)
         }
+    }
+}
+
+@Composable
+fun DownloadLocationPickerRow(
+    selectedFolder: String,
+    onFolderSelected: (String) -> Unit,
+    accentColor: Color,
+    textColor: Color,
+    subtextColor: Color,
+    trackBg: Color
+) {
+    var showCustomDialog by remember { mutableStateOf(false) }
+    var customText by remember(selectedFolder) { mutableStateOf(selectedFolder) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Folder,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Download Folder",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = textColor
+                )
+            }
+            Text(
+                text = selectedFolder,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = accentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Quick Selector Pills: Downloads, Music, Movies, Custom
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            val presets = listOf("Download/VidGrab", "Music/VidGrab", "Movies/VidGrab")
+            presets.forEach { preset ->
+                val isSelected = selectedFolder == preset
+                val label = when (preset) {
+                    "Download/VidGrab" -> "Downloads"
+                    "Music/VidGrab" -> "Music"
+                    "Movies/VidGrab" -> "Movies"
+                    else -> preset
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isSelected) accentColor.copy(alpha = 0.15f) else trackBg)
+                        .border(
+                            width = 1.dp,
+                            color = if (isSelected) accentColor else Color.Transparent,
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .clickable { onFolderSelected(preset) }
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 11.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isSelected) accentColor else subtextColor
+                    )
+                }
+            }
+
+            // Custom Folder Button
+            val isCustom = !presets.contains(selectedFolder)
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (isCustom) accentColor.copy(alpha = 0.15f) else trackBg)
+                    .border(
+                        width = 1.dp,
+                        color = if (isCustom) accentColor else Color.Transparent,
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    .clickable { showCustomDialog = true }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = "Custom Folder",
+                    tint = if (isCustom) accentColor else subtextColor,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+
+    if (showCustomDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomDialog = false },
+            title = { Text("Custom Download Folder", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        text = "Enter relative folder path inside public storage (e.g., Download/Podcasts):",
+                        fontSize = 12.sp,
+                        color = subtextColor
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = customText,
+                        onValueChange = { customText = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val trimmed = customText.trim().trim('/')
+                        if (trimmed.isNotBlank()) {
+                            onFolderSelected(trimmed)
+                        }
+                        showCustomDialog = false
+                    }
+                ) {
+                    Text("Save", color = accentColor, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomDialog = false }) {
+                    Text("Cancel", color = subtextColor)
+                }
+            }
+        )
     }
 }

@@ -68,8 +68,8 @@ class BrowserViewModel : ViewModel() {
      */
     fun classifyUrl(url: String): String {
         return when {
-            url.contains("list=") || url.contains("/playlist") -> "PLAYLIST"
             url.contains("/watch") || url.contains("/shorts/") || url.contains("youtu.be/") -> "VIDEO"
+            url.contains("list=") || url.contains("/playlist") -> "PLAYLIST"
             url.contains("/@") || url.contains("/channel/") || url.contains("/c/") -> "CHANNEL"
             else -> "PAGE"
         }
@@ -88,11 +88,21 @@ class BrowserViewModel : ViewModel() {
             WebViewSessionManager.latestPlayerResponseJson
         } else null
 
+        var durationSec = 0L
+        if (!inlineJson.isNullOrBlank()) {
+            try {
+                val root = org.json.JSONObject(inlineJson)
+                val vd = root.optJSONObject("videoDetails")
+                durationSec = vd?.optString("lengthSeconds")?.toLongOrNull() ?: vd?.optLong("lengthSeconds", 0L) ?: 0L
+            } catch (e: Exception) {}
+        }
+
         return DownloadTriggerPayload(
             url = url,
             itemType = type,
             title = title,
-            inlinePlayerJson = inlineJson
+            inlinePlayerJson = inlineJson,
+            durationSeconds = durationSec
         )
     }
 }

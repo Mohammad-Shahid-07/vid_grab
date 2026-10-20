@@ -13,7 +13,8 @@ data class DownloadTriggerPayload(
     val url: String,
     val itemType: String, // "VIDEO", "PLAYLIST", "CHANNEL"
     val title: String,
-    val inlinePlayerJson: String?
+    val inlinePlayerJson: String?,
+    val durationSeconds: Long = 0L
 )
 
 /**
@@ -49,18 +50,25 @@ class YouTubeJsBridge(
     }
 
     @JavascriptInterface
-    fun onDownloadClicked(url: String, itemType: String, title: String, inlinePlayerJson: String?) {
-        Timber.i("YouTubeJsBridge: onDownloadClicked [type=%s, url=%s, title=%s, hasInlineJson=%b]", itemType, url, title, !inlinePlayerJson.isNullOrBlank())
+    fun onDownloadClicked(url: String, itemType: String, title: String, inlinePlayerJson: String?, durationSeconds: Long) {
+        val cleanUrl = com.vidgrab.app.core.extractor.DualEngineMetadataResolver.sanitizeMediaUrl(url)
+        Timber.i("YouTubeJsBridge: onDownloadClicked [type=%s, cleanUrl=%s, title=%s, dur=%ds, hasInlineJson=%b]", itemType, cleanUrl, title, durationSeconds, !inlinePlayerJson.isNullOrBlank())
         val payload = DownloadTriggerPayload(
-            url = url,
+            url = cleanUrl,
             itemType = itemType,
             title = title.ifBlank { "YouTube Media" },
-            inlinePlayerJson = inlinePlayerJson?.takeIf { it.isNotBlank() }
+            inlinePlayerJson = inlinePlayerJson?.takeIf { it.isNotBlank() },
+            durationSeconds = durationSeconds.coerceAtLeast(0L)
         )
 
         // Post to Main Looper for Compose UI consumption
         mainHandler.post {
             onDownloadTriggered(payload)
         }
+    }
+
+    @JavascriptInterface
+    fun onDownloadClicked(url: String, itemType: String, title: String, inlinePlayerJson: String?) {
+        onDownloadClicked(url, itemType, title, inlinePlayerJson, 0L)
     }
 }

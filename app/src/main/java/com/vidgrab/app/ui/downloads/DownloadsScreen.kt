@@ -86,10 +86,10 @@ fun DownloadsScreen(
     val context = LocalContext.current
 
     val pausedTasks = remember(allTasks) {
-        allTasks.filter { it.status == TaskStatus.PAUSED }
+        allTasks.filter { it.status == TaskStatus.PAUSED }.sortedBy { it.createdAt }
     }
 
-    // Active downloading tasks: strictly sort so that DOWNLOADING / MERGING are at the VERY TOP
+    // Active downloading tasks: strictly sort so that DOWNLOADING / MERGING are at the VERY TOP, fixed by createdAt
     val activeAndPendingTasks = remember(allTasks) {
         allTasks
             .filter { it.status in listOf(TaskStatus.DOWNLOADING, TaskStatus.MERGING, TaskStatus.EXPANDING, TaskStatus.PENDING) }
@@ -102,7 +102,7 @@ fun DownloadsScreen(
                         TaskStatus.PENDING -> 4
                         else -> 5
                     }
-                }.thenByDescending { it.updatedAt }
+                }.thenBy { task -> task.createdAt }
             )
     }
 
@@ -431,13 +431,37 @@ fun DownloadCard(
     val elapsedMs = nowMs - task.createdAt
     val downloadedStr = formatBytes(task.downloadedBytes)
     val totalStr = if (task.totalBytes > 0L) formatBytes(task.totalBytes) else ""
-    val sizeProgressStr = if (totalStr.isNotEmpty()) "$downloadedStr / $totalStr" else downloadedStr
+    val sizeProgressStr = if (totalStr.isNotEmpty() && downloadedStr.isNotEmpty()) {
+        "$downloadedStr / $totalStr"
+    } else if (downloadedStr.isNotEmpty()) {
+        downloadedStr
+    } else ""
 
-    val statusDisplayText = if (isConnecting) {
-        val totalSuffix = if (totalStr.isNotEmpty()) " • $totalStr" else ""
-        if (elapsedMs < 5000L) "Connecting$totalSuffix..." else "Download will start in a moment$totalSuffix..."
-    } else {
-        "$sizeProgressStr (${task.progressPercent.toInt()}%) • ${task.speedText.ifBlank { "Downloading..." }}"
+    val sanitizedSpeed = task.speedText.let { text ->
+        when {
+            text.contains("ffmpeg", ignoreCase = true) ||
+            text.contains("merger", ignoreCase = true) ||
+            text.contains("mux", ignoreCase = true) ||
+            text.contains("-c copy", ignoreCase = true) -> ""
+            else -> text
+        }
+    }
+
+    val statusDisplayText = when {
+        task.status == TaskStatus.MERGING -> "Merging audio and video..."
+        task.status == TaskStatus.PAUSED -> "Paused"
+        isConnecting -> {
+            val totalSuffix = if (totalStr.isNotEmpty()) " • $totalStr" else ""
+            if (elapsedMs < 5000L) "Connecting$totalSuffix..." else "Download will start in a moment$totalSuffix..."
+        }
+        else -> {
+            val pct = "${task.progressPercent.toInt()}%"
+            val parts = mutableListOf<String>()
+            if (sizeProgressStr.isNotEmpty()) parts.add(sizeProgressStr)
+            parts.add("($pct)")
+            if (sanitizedSpeed.isNotBlank()) parts.add(sanitizedSpeed)
+            parts.joinToString(" • ")
+        }
     }
 
     val theme = AppTheme.colors
@@ -492,7 +516,7 @@ fun DownloadCard(
                         Text(
                             text = when (task.status) {
                                 TaskStatus.DOWNLOADING -> if (isConnecting) "CONNECTING" else "DOWNLOADING"
-                                TaskStatus.MERGING -> "MERGING (-c copy)"
+                                TaskStatus.MERGING -> "MERGING"
                                 TaskStatus.PAUSED -> "PAUSED"
                                 TaskStatus.EXPANDING -> "EXPANDING"
                                 else -> "QUEUED"

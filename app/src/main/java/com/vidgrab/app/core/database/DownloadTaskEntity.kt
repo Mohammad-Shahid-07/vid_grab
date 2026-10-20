@@ -52,6 +52,9 @@ data class DownloadTaskEntity(
     val sponsorSegmentsJson: String? = null,
     val embedSubtitles: Boolean = false,
     val embedChapters: Boolean = false,
+    val downloadFolder: String? = null,
+    val resolvedVideoStreamUrl: String? = null,
+    val resolvedAudioStreamUrl: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )

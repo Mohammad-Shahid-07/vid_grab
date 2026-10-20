@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:background="@android:color/transparent"
+    android:gravity="center_vertical">
+
+    <!-- 16:9 Video Thumbnail Preview -->
+    <ImageView
+        android:id="@+id/notif_thumbnail"
+        android:layout_width="68dp"
+        android:layout_height="44dp"
+        android:background="@drawable/notification_thumbnail_bg"
+        android:scaleType="centerCrop"
+        android:contentDescription="Video Thumbnail" />
+
+    <!-- Details Column -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="10dp"
+        android:orientation="vertical">
+
+        <!-- Title -->
+        <TextView
+            android:id="@+id/notif_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Video Title"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <!-- Modern Gold Progress Bar -->
+        <ProgressBar
+            android:id="@+id/notif_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:layout_marginTop="5dp"
+            android:layout_marginBottom="4dp"
+            android:indeterminateOnly="false"
+            android:progressTint="#E5A93C"
+            android:progressBackgroundTint="#2C2C32"
+            android:max="100"
+            android:progress="0" />
+
+        <!-- Non-Truncating Stats Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/notif_size"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="0 MB / 0 MB"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:maxLines="1"
+                android:ellipsize="end" />
+
+            <TextView
+                android:id="@+id/notif_speed_eta"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="Downloading..."
+                android:textSize="11sp"
+                android:textColor="#E5A93C"
+                android:maxLines="1"
+                android:ellipsize="end" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

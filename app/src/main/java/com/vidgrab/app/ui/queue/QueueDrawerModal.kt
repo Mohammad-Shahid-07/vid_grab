@@ -27,9 +27,13 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.fillMaxSize
+import com.vidgrab.app.core.storage.RemoteThumbnailImage
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -295,41 +299,88 @@ fun ActiveTaskRow(
             .fillMaxWidth()
             .padding(vertical = 5.dp)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Status Pill
-                val statusColor = when (task.status) {
-                    TaskStatus.DOWNLOADING -> Color(0xFFE5A93C)
-                    TaskStatus.MERGING -> Color(0xFF2C6954)
-                    TaskStatus.PAUSED -> Color(0xFF8C827A)
-                    else -> Color(0xFF7F7875)
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 16:9 Thumbnail with format badge
+                Box(modifier = Modifier.size(width = 68.dp, height = 44.dp)) {
+                    RemoteThumbnailImage(
+                        url = task.thumbnailUrl,
+                        contentDescription = task.title,
+                        fallbackIcon = if (task.isAudioOnly) Icons.Default.MusicNote else Icons.Default.PlayArrow,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp))
+                    )
+                    // Format Tag Overlay
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(2.dp)
+                            .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(3.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = if (task.isAudioOnly) task.outputExt.uppercase() else "${task.targetHeight ?: 1080}p",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
                 }
 
-                Text(
-                    text = when (task.status) {
-                        TaskStatus.DOWNLOADING -> "DOWNLOADING"
-                        TaskStatus.MERGING -> "MERGING (-c copy)"
-                        TaskStatus.PAUSED -> "PAUSED"
-                        TaskStatus.EXPANDING -> "EXPANDING"
-                        else -> "PENDING"
-                    },
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = statusColor,
-                    modifier = Modifier
-                        .background(statusColor.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                )
+                Spacer(modifier = Modifier.width(10.dp))
 
-                Spacer(modifier = Modifier.width(6.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val statusColor = when (task.status) {
+                            TaskStatus.DOWNLOADING -> Color(0xFFE5A93C)
+                            TaskStatus.MERGING -> Color(0xFF2C6954)
+                            TaskStatus.PAUSED -> Color(0xFF8C827A)
+                            else -> Color(0xFF7F7875)
+                        }
 
-                Text(
-                    text = "${task.outputExt.uppercase()}${if (task.targetHeight != null) " • ${task.targetHeight}p" else ""}",
-                    fontSize = 10.sp,
-                    color = Color(0xFF7F7875)
-                )
+                        Text(
+                            text = when (task.status) {
+                                TaskStatus.DOWNLOADING -> "DOWNLOADING"
+                                TaskStatus.MERGING -> "MERGING"
+                                TaskStatus.PAUSED -> "PAUSED"
+                                TaskStatus.EXPANDING -> "EXPANDING"
+                                else -> "PENDING"
+                            },
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = statusColor,
+                            modifier = Modifier
+                                .background(statusColor.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                        )
 
-                Spacer(modifier = Modifier.weight(1f))
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        Text(
+                            text = "${task.progressPercent.toInt()}%",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFE5A93C)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(3.dp))
+
+                    Text(
+                        text = task.title,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = Color(0xFF241D1B)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(4.dp))
 
                 // Action Buttons: Pause / Resume, Cancel
                 if (task.status == TaskStatus.DOWNLOADING || task.status == TaskStatus.MERGING) {
@@ -341,22 +392,10 @@ fun ActiveTaskRow(
                         Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
                     }
                 }
-                Spacer(modifier = Modifier.width(4.dp))
                 IconButton(onClick = onCancel, modifier = Modifier.size(28.dp)) {
                     Icon(Icons.Default.Close, contentDescription = "Cancel", tint = Color(0xFF7F7875), modifier = Modifier.size(16.dp))
                 }
             }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Text(
-                text = task.title,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = Color(0xFF241D1B)
-            )
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -373,15 +412,21 @@ fun ActiveTaskRow(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Speed & ETA
+            // Live Size Counters & Speed
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                val sizeText = if (task.totalBytes > 0L) {
+                    "${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}"
+                } else if (task.downloadedBytes > 0L) {
+                    formatBytes(task.downloadedBytes)
+                } else "Starting..."
+
                 Text(
-                    text = "${task.progressPercent.toInt()}% • ${task.speedText.ifBlank { "Starting download..." }}",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
+                    text = "$sizeText • ${task.speedText.ifBlank { "Downloading..." }}",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
                     color = Color(0xFF5F5B59),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -389,7 +434,7 @@ fun ActiveTaskRow(
                 )
                 Text(
                     text = if (task.etaSeconds > 0) "ETA ${task.etaSeconds}s" else "",
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     color = Color(0xFF7F7875)
                 )
             }
@@ -413,42 +458,76 @@ fun CompletedTaskRow(
     ) {
         Row(
             modifier = Modifier
-                .padding(14.dp)
+                .padding(12.dp)
                 .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(Color(0xFFE5A93C).copy(alpha = 0.12f), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFFE5A93C), modifier = Modifier.size(20.dp))
+            // 16:9 Thumbnail
+            Box(modifier = Modifier.size(width = 68.dp, height = 44.dp)) {
+                RemoteThumbnailImage(
+                    url = task.thumbnailUrl,
+                    contentDescription = task.title,
+                    fallbackIcon = if (task.isAudioOnly) Icons.Default.MusicNote else Icons.Default.PlayArrow,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(8.dp))
+                )
+                // Format Tag Overlay
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(2.dp)
+                        .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(3.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        text = if (task.isAudioOnly) task.outputExt.uppercase() else "${task.targetHeight ?: 1080}p",
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(10.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = task.title,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     color = Color(0xFF241D1B)
                 )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "${task.outputExt.uppercase()} • ${formatBytes(task.totalBytes)}",
-                    fontSize = 11.sp,
-                    color = Color(0xFF7F7875)
-                )
+                Spacer(modifier = Modifier.height(3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xFF2C6954).copy(alpha = 0.12f), RoundedCornerShape(3.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = "COMPLETED",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF2C6954)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "${task.outputExt.uppercase()} • ${formatBytes(task.totalBytes)}",
+                        fontSize = 10.sp,
+                        color = Color(0xFF7F7875)
+                    )
+                }
             }
 
             // Open Action
             IconButton(onClick = onOpen, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.Default.FileOpen, contentDescription = "Open", tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
             }
+
             // Delete Action
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFF7F7875), modifier = Modifier.size(18.dp))
