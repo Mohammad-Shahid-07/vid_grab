@@ -920,13 +920,13 @@ fun DownloadLocationPickerRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            val presets = listOf("Download/VidGrab", "Music/VidGrab", "Movies/VidGrab")
+            val presets = listOf("Download/YouDrop", "Music/YouDrop", "Movies/YouDrop")
             presets.forEach { preset ->
                 val isSelected = selectedFolder == preset
                 val label = when (preset) {
-                    "Download/VidGrab" -> "Downloads"
-                    "Music/VidGrab" -> "Music"
-                    "Movies/VidGrab" -> "Movies"
+                    "Download/YouDrop" -> "Downloads"
+                    "Music/YouDrop" -> "Music"
+                    "Movies/YouDrop" -> "Movies"
                     else -> preset
                 }
                 Box(

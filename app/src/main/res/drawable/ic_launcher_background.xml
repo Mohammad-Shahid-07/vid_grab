@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Deep charcoal squircle base -->
+    <path
+        android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="15"
+                android:startY="5"
+                android:endX="93"
+                android:endY="103"
+                android:type="linear">
+                <item android:color="#FF1E1E26" android:offset="0.0" />
+                <item android:color="#FF0B0B0F" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Ambient Crimson Glow in upper center -->
+    <path
+        android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="54"
+                android:centerY="30"
+                android:gradientRadius="50"
+                android:type="radial">
+                <item android:color="#3DFF1C3C" android:offset="0.0" />
+                <item android:color="#00FF1C3C" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

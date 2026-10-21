@@ -35,7 +35,7 @@ class DownloadQueueWorker(
         DownloadNotificationManager.createNotificationChannel(applicationContext)
         val initialNotif = DownloadNotificationManager.buildProgressNotification(
             context = applicationContext,
-            title = "VidGrab Queue Engine",
+            title = "YouDrop Queue Engine",
             progressPercent = 0f,
             speedText = "Starting queue...",
             etaSeconds = -1L,

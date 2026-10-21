@@ -1,0 +1,153 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  width="100%"
+  height="100%"
+  fill="none"
+>
+  <defs>
+    <!-- App Icon Squircle Base Gradient -->
+    <linearGradient id="bgSquircleGrad" x1="75" y1="26" x2="437" y2="486" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1E1E26" />
+      <stop offset="100%" stop-color="#0B0B0F" />
+    </linearGradient>
+
+    <!-- Ambient Crimson Radial Glow -->
+    <radialGradient id="crimsonAmbientGlow" cx="256" cy="144" r="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FF1C3C" stop-opacity="0.24" />
+      <stop offset="100%" stop-color="#FF1C3C" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Top Specular Glass Sheen -->
+    <linearGradient id="topSpecularSheen" x1="256" y1="0" x2="256" y2="210" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+    </linearGradient>
+
+    <!-- YouTube Red Card Gradient -->
+    <linearGradient id="v1Red" x1="12" y1="6" x2="34" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FF3B56" />
+      <stop offset="100%" stop-color="#D90429" />
+    </linearGradient>
+
+    <!-- Sculpted Porcelain Pocket Gradient -->
+    <linearGradient id="v1Pocket" x1="24" y1="22" x2="24" y2="41" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#DFE2EC" />
+    </linearGradient>
+
+    <!-- Soft Drop Shadow for the Inner Mark -->
+    <filter id="markDropShadow" x="-10%" y="-10%" width="120%" height="125%" filterUnits="objectBoundingBox">
+      <feDropShadow dx="0" dy="1.2" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.45" />
+    </filter>
+  </defs>
+
+  <!-- LAYER 1: App Icon Squircle Background (Delete or hide this group for a transparent background) -->
+  <g id="App-Icon-Squircle-Background">
+    <rect
+      x="0"
+      y="0"
+      width="512"
+      height="512"
+      rx="122"
+      fill="url(#bgSquircleGrad)"
+    />
+    <rect
+      x="0"
+      y="0"
+      width="512"
+      height="512"
+      rx="122"
+      fill="url(#crimsonAmbientGlow)"
+    />
+    <rect
+      x="0"
+      y="0"
+      width="512"
+      height="512"
+      rx="122"
+      fill="url(#topSpecularSheen)"
+    />
+    <!-- Subtle Inner Specular Rim Border -->
+    <rect
+      x="2"
+      y="2"
+      width="508"
+      height="508"
+      rx="120"
+      stroke="#FFFFFF"
+      stroke-opacity="0.14"
+      stroke-width="4"
+    />
+  </g>
+
+  <!-- LAYER 2: Main YouDrop / UDrop Vector Mark (Scaled cleanly to 512x512 center) -->
+  <g id="YouDrop-Logo-Mark" transform="translate(46, 46) scale(8.75)" filter="url(#markDropShadow)">
+    <!-- Deep Inner Pocket Shadow Well -->
+    <rect
+      id="Pocket-Inner-Well"
+      x="9.5"
+      y="20.5"
+      width="29"
+      height="10"
+      rx="5"
+      fill="#111116"
+    />
+
+    <!-- Tilted Red YouTube Card -->
+    <g id="YouTube-Red-Card" transform="rotate(-7 24 18)">
+      <rect
+        x="11"
+        y="7"
+        width="26"
+        height="20"
+        rx="6.5"
+        fill="url(#v1Red)"
+      />
+      <!-- Top Specular Rim on Red Card -->
+      <rect
+        x="11.6"
+        y="7.6"
+        width="24.8"
+        height="18.8"
+        rx="5.9"
+        stroke="#FFFFFF"
+        stroke-opacity="0.25"
+        stroke-width="1"
+      />
+      <!-- Crisp Centered Play Triangle -->
+      <path
+        id="Play-Triangle"
+        d="M21.8 13.2C21.8 12.5 22.6 12.1 23.2 12.5L28.4 15.8C29 16.2 29 17 28.4 17.4L23.2 20.7C22.6 21.1 21.8 20.7 21.8 20V13.2Z"
+        fill="#FFFFFF"
+      />
+    </g>
+
+    <!-- Soft Ambient Shadow Cast onto the Red Card by the Pocket Lip -->
+    <path
+      id="Pocket-Lip-Shadow"
+      d="M11 24.5Q24 28.5 37 24.5"
+      stroke="#07070A"
+      stroke-opacity="0.45"
+      stroke-width="3"
+      stroke-linecap="round"
+    />
+
+    <!-- Sculpted White Pocket whose Top Lip Forms a Natural Downward V-Chevron Notch -->
+    <path
+      id="Sculpted-White-Pocket"
+      d="M8.5 26.2C8.5 24.2 10.1 22.8 12.1 23.2L22.2 25.3C23.4 25.6 24.6 25.6 25.8 25.3L35.9 23.2C37.9 22.8 39.5 24.2 39.5 26.2V31.8C39.5 36.9 35.4 41 30.3 41H17.7C12.6 41 8.5 36.9 8.5 31.8V26.2Z"
+      fill="url(#v1Pocket)"
+    />
+
+    <!-- Bold, Single-Stroke Downward Chevron Slot Carved into Pocket -->
+    <path
+      id="Downward-Chevron-Slot"
+      d="M20.2 31.8L24 35L27.8 31.8"
+      stroke="#16161D"
+      stroke-width="3.2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </g>
+</svg>

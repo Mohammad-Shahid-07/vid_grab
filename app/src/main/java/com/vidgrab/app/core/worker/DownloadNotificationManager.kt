@@ -205,7 +205,7 @@ object DownloadNotificationManager {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(if (isAudio) "Audio Download Complete" else "Video Download Complete")
             .setContentText(title)
-            .setSubText("VidGrab")
+            .setSubText("YouDrop")
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)

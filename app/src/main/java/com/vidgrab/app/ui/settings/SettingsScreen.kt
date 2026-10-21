@@ -518,7 +518,7 @@ fun SettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "/storage/emulated/0/Download/VidGrab/",
+                                text = "/storage/emulated/0/Download/YouDrop/",
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.sp,
                                 color = currentTheme.textPrimary,
@@ -526,7 +526,7 @@ fun SettingsScreen(
                             )
                             IconButton(
                                 onClick = {
-                                    clipboardManager.setText(AnnotatedString("/storage/emulated/0/Download/VidGrab/"))
+                                    clipboardManager.setText(AnnotatedString("/storage/emulated/0/Download/YouDrop/"))
                                     Toast.makeText(context, "Download folder path copied", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.size(32.dp)

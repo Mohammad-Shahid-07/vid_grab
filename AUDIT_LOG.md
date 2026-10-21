@@ -1603,4 +1603,62 @@
    - **`DownloadsScreen.kt`**: Replaced `.thenByDescending { it.updatedAt }` with `.thenBy { task -> task.createdAt }` for `activeAndPendingTasks`, and sorted `pausedTasks` by `createdAt ASC`.
    - The active download order is now firmly locked to the time each task was first initiated, eliminating any jumping or flickering.
 
+---
+
+## Entry 055: Full "YouDrop" Rebranding & Production Launcher Icon Generation
+- **Date/Time**: 2026-10-20T22:50:00+05:30
+- **Context**: Rebranded the app from "VidGrab" to **"YouDrop"** using the official logo from [`youdrop_app_icon_svg.svg`](file:///d:/Web-Dev/react-native/vid_grab/youdrop_app_icon_svg.svg). Generated full Android production launcher icon sets (adaptive and legacy across all DPIs) and updated all application strings, public export paths, notification channels, and UI prototypes.
+
+### 1. Icon Architecture & Asset Generation
+
+1. **Master High-Resolution Asset Rendering**:
+   - Extracted and rendered the SVG using headless Microsoft Edge into pixel-perfect 512x512 master assets:
+     - `icon_512.png`: 512x512 squircle full launcher icon.
+     - `icon_round_512.png`: 512x512 circular launcher icon.
+     - `icon_foreground_512.png`: 512x512 transparent-background mark (centered in the 60% safe zone) for Android adaptive icon foregrounds.
+
+2. **Complete Mipmap Density Generation (Bicubic High-Quality Resampling)**:
+   - Generated legacy squircle, circular, and adaptive foreground PNGs across all target densities:
+     - `res/mipmap-mdpi`: `ic_launcher.png` (48x48), `ic_launcher_round.png` (48x48), `ic_launcher_foreground.png` (108x108).
+     - `res/mipmap-hdpi`: `ic_launcher.png` (72x72), `ic_launcher_round.png` (72x72), `ic_launcher_foreground.png` (162x162).
+     - `res/mipmap-xhdpi`: `ic_launcher.png` (96x96), `ic_launcher_round.png` (96x96), `ic_launcher_foreground.png` (216x216).
+     - `res/mipmap-xxhdpi`: `ic_launcher.png` (144x144), `ic_launcher_round.png` (144x144), `ic_launcher_foreground.png` (324x324).
+     - `res/mipmap-xxxhdpi`: `ic_launcher.png` (192x192), `ic_launcher_round.png` (192x192), `ic_launcher_foreground.png` (432x432).
+
+3. **Android 8.0+ Adaptive XML Drawables**:
+   - `res/drawable/ic_launcher_background.xml`: Vector drawable implementing the deep charcoal `#1E1E26` to `#0B0B0F` diagonal linear gradient with subtle `#FF1C3C` ambient radial glow.
+   - `res/mipmap-anydpi-v26/ic_launcher.xml`: Adaptive icon pairing `ic_launcher_background` with `ic_launcher_foreground`.
+   - `res/mipmap-anydpi-v26/ic_launcher_round.xml`: Adaptive round icon pairing `ic_launcher_background` with `ic_launcher_foreground`.
+
+### 2. App & Codebase Rebranding
+
+1. **Manifest & App Strings**:
+   - `app/src/main/res/values/strings.xml`: Set `app_name` to `"YouDrop"`, and notification channel to `"YouDrop Media Downloads"`.
+   - `app/src/main/AndroidManifest.xml`: Pointed `android:icon` to `@mipmap/ic_launcher` and `android:roundIcon` to `@mipmap/ic_launcher_round`.
+
+2. **Storage Export & MediaStore Pipeline**:
+   - `MediaStoreExporter.kt`: Updated default Scoped Storage public directories from `"Download/VidGrab"` and `"Music/VidGrab"` to `"Download/YouDrop"` and `"Music/YouDrop"`.
+   - `SettingsScreen.kt`: Updated storage path display and clipboard copy action to `"/storage/emulated/0/Download/YouDrop/"`.
+   - `QualityPickerViewModel.kt`: Updated default folder selection and audio toggle switching to `"Download/YouDrop"` and `"Music/YouDrop"`.
+   - `QualityPickerBottomSheet.kt`: Updated preset chips to `"Download/YouDrop"`, `"Music/YouDrop"`, and `"Movies/YouDrop"`.
+
+3. **Notifications & Diagnostics**:
+   - `DownloadQueueWorker.kt`: Updated initial foreground notification title to `"YouDrop Queue Engine"`.
+   - `DownloadNotificationManager.kt`: Updated completion notification subtext to `"YouDrop"`.
+   - `MainActivity.kt`: Updated engine initialization status header to `"YouDrop"`.
+   - `App.kt`: Updated startup log to `"YouDrop Application starting..."`.
+
+4. **Web UI Prototype**:
+   - Updated mock download file paths, notifications header badge, Settings architecture description, and HTML page title to YouDrop.
+
+### 3. Verification & Build Artifacts
+- **Commands Executed**:
+  - `.\gradlew.bat compileDebugKotlin`: `BUILD SUCCESSFUL in 53s`.
+  - `.\gradlew.bat assembleDebug`: `BUILD SUCCESSFUL in 29s`.
+- **Output APKs Ready**:
+  - [`app-arm64-v8a-debug.apk`](file:///d:/Web-Dev/react-native/vid_grab/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk) (125.5 MB)
+  - [`app-universal-debug.apk`](file:///d:/Web-Dev/react-native/vid_grab/app/build/outputs/apk/debug/app-universal-debug.apk) (286.5 MB)
+  - [`app-armeabi-v7a-debug.apk`](file:///d:/Web-Dev/react-native/vid_grab/app/build/outputs/apk/debug/app-armeabi-v7a-debug.apk) (118.3 MB)
+  - [`app-x86_64-debug.apk`](file:///d:/Web-Dev/react-native/vid_grab/app/build/outputs/apk/debug/app-x86_64-debug.apk) (128.6 MB)
+
 

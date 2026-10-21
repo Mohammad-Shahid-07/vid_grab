@@ -81,7 +81,7 @@ object MediaStoreExporter {
         val sanitizedTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(120)
         val extSuffix = if (actualExt.isNotBlank()) ".$actualExt" else ""
 
-        val effectiveFolder = targetFolder?.trim('/')?.takeIf { it.isNotBlank() } ?: (if (isAudioOnly) "Music/VidGrab" else "Download/VidGrab")
+        val effectiveFolder = targetFolder?.trim('/')?.takeIf { it.isNotBlank() } ?: (if (isAudioOnly) "Music/YouDrop" else "Download/YouDrop")
         val baseDirType = if (effectiveFolder.startsWith("Music", ignoreCase = true)) {
             Environment.DIRECTORY_MUSIC
         } else if (effectiveFolder.startsWith("Movies", ignoreCase = true)) {
@@ -89,7 +89,7 @@ object MediaStoreExporter {
         } else {
             Environment.DIRECTORY_DOWNLOADS
         }
-        val subName = effectiveFolder.substringAfter('/', "VidGrab")
+        val subName = effectiveFolder.substringAfter('/', "YouDrop")
 
         val publicDir = File(Environment.getExternalStoragePublicDirectory(baseDirType), subName)
         if (!publicDir.exists()) publicDir.mkdirs()

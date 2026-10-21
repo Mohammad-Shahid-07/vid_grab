@@ -44,7 +44,7 @@ class App : Application() {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
         }
-        Timber.i("VidGrab Application starting. API Level: %d, ABI: %s", Build.VERSION.SDK_INT, Build.SUPPORTED_ABIS.firstOrNull())
+        Timber.i("YouDrop Application starting. API Level: %d, ABI: %s", Build.VERSION.SDK_INT, Build.SUPPORTED_ABIS.firstOrNull())
 
         // Build shared OkHttp client for Tier 2 Fast JVM extraction and general network I/O
         sharedOkHttpClient = OkHttpClient.Builder()

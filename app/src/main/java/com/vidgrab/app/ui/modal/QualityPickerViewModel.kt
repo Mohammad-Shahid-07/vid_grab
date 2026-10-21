@@ -29,7 +29,7 @@ sealed interface QualityPickerUiState {
         val cutSponsor: Boolean = false,
         val embedSubtitles: Boolean = false,
         val embedChapters: Boolean = false,
-        val selectedDownloadFolder: String = "Download/VidGrab"
+        val selectedDownloadFolder: String = "Download/YouDrop"
     ) : QualityPickerUiState
     data class Error(val message: String) : QualityPickerUiState
 }
@@ -73,10 +73,10 @@ class QualityPickerViewModel : ViewModel() {
 
     fun selectTab(isAudioOnly: Boolean) {
         val current = _uiState.value as? QualityPickerUiState.Success ?: return
-        val updatedFolder = if (isAudioOnly && current.selectedDownloadFolder == "Download/VidGrab") {
-            "Music/VidGrab"
-        } else if (!isAudioOnly && current.selectedDownloadFolder == "Music/VidGrab") {
-            "Download/VidGrab"
+        val updatedFolder = if (isAudioOnly && current.selectedDownloadFolder == "Download/YouDrop") {
+            "Music/YouDrop"
+        } else if (!isAudioOnly && current.selectedDownloadFolder == "Music/YouDrop") {
+            "Download/YouDrop"
         } else {
             current.selectedDownloadFolder
         }

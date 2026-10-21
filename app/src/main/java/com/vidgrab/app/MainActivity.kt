@@ -124,7 +124,7 @@ fun EngineStatusScreen(engineState: EngineInitState) {
         modifier = Modifier.padding(24.dp)
     ) {
         Text(
-            text = "VidGrab",
+            text = "YouDrop",
             fontSize = 32.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFFE5A93C)
