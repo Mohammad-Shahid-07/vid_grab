@@ -63,3 +63,4 @@ Thumbs.db
 # Web Prototype completely excluded
 web_ui_prototype/
 *.local
+

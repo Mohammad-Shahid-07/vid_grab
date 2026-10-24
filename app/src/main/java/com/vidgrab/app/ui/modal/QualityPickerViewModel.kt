@@ -6,6 +6,7 @@ import com.vidgrab.app.core.extractor.DownloadRequestSpec
 import com.vidgrab.app.core.extractor.DualEngineMetadataResolver
 import com.vidgrab.app.core.extractor.FormatSelectorBuilder
 import com.vidgrab.app.core.extractor.ResolvedMediaInfo
+import com.vidgrab.app.core.extractor.VideoQualityOption
 import com.vidgrab.app.core.webview.DownloadTriggerPayload
 import com.vidgrab.app.core.webview.WebViewSessionManager
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,6 +21,7 @@ sealed interface QualityPickerUiState {
         val mediaInfo: ResolvedMediaInfo,
         val isAudioOnlyTab: Boolean = false,
         val selectedVideoHeight: Int = 1080,
+        val selectedVideoOption: VideoQualityOption? = null,
         val selectedAudioExtension: String = "m4a",
         val selectedAudioBitrateKbps: Int = 160,
         val enableAria2cTurbo: Boolean = false,
@@ -47,6 +49,9 @@ class QualityPickerViewModel : ViewModel() {
                 val defaultHeight = resolved.videoOptions.firstOrNull { it.height <= 1080 }?.height
                     ?: resolved.videoOptions.firstOrNull()?.height ?: 1080
 
+                val defaultVideoOption = resolved.videoOptions.firstOrNull { it.height == defaultHeight && it.vcodec == "H.264" }
+                    ?: resolved.videoOptions.firstOrNull { it.height == defaultHeight }
+
                 val defaultAudio = resolved.audioOptions.firstOrNull { it.extension == "m4a" }
                     ?: resolved.audioOptions.firstOrNull()
 
@@ -57,6 +62,7 @@ class QualityPickerViewModel : ViewModel() {
                     mediaInfo = resolved,
                     isAudioOnlyTab = false,
                     selectedVideoHeight = defaultHeight,
+                    selectedVideoOption = defaultVideoOption,
                     selectedAudioExtension = defaultAudio?.extension ?: "m4a",
                     selectedAudioBitrateKbps = defaultAudio?.bitrateKbps ?: 160,
                     enableAria2cTurbo = false,
@@ -93,7 +99,22 @@ class QualityPickerViewModel : ViewModel() {
 
     fun selectVideoHeight(height: Int) {
         val current = _uiState.value as? QualityPickerUiState.Success ?: return
-        _uiState.value = current.copy(selectedVideoHeight = height)
+        val currentCodec = current.selectedVideoOption?.vcodec
+        val bestOption = current.mediaInfo.videoOptions.firstOrNull { it.height == height && it.vcodec == currentCodec }
+            ?: current.mediaInfo.videoOptions.firstOrNull { it.height == height && it.vcodec == "H.264" }
+            ?: current.mediaInfo.videoOptions.firstOrNull { it.height == height }
+        _uiState.value = current.copy(
+            selectedVideoHeight = height,
+            selectedVideoOption = bestOption
+        )
+    }
+
+    fun selectVideoVariant(option: VideoQualityOption) {
+        val current = _uiState.value as? QualityPickerUiState.Success ?: return
+        _uiState.value = current.copy(
+            selectedVideoHeight = option.height,
+            selectedVideoOption = option
+        )
     }
 
     fun selectAudio(extension: String, bitrate: Int) {
@@ -177,13 +198,16 @@ class QualityPickerViewModel : ViewModel() {
         val info = state.mediaInfo
 
         val isAudio = state.isAudioOnlyTab
+        val chosenVideo = state.selectedVideoOption
+            ?: info.videoOptions.firstOrNull { it.height == state.selectedVideoHeight }
+
         val formatSelector = if (isAudio) {
             FormatSelectorBuilder.buildAudioSelector(state.selectedAudioExtension)
         } else {
-            FormatSelectorBuilder.buildVideoSelector(state.selectedVideoHeight)
+            chosenVideo?.formatSelector ?: FormatSelectorBuilder.buildVideoSelector(state.selectedVideoHeight)
         }
 
-        val ext = if (isAudio) state.selectedAudioExtension else "mp4"
+        val ext = if (isAudio) state.selectedAudioExtension else (chosenVideo?.container ?: "mp4")
 
         val isBatch = info is ResolvedMediaInfo.PlaylistOrChannel
         if (isBatch && state.selectedBatchUrls.isEmpty()) {
@@ -209,8 +233,8 @@ class QualityPickerViewModel : ViewModel() {
                 } ?: info.audioOptions.firstOrNull { it.bitrateKbps == state.selectedAudioBitrateKbps }
                 match?.estimatedBytes?.takeIf { it > 0L } ?: 0L
             } else {
-                val match = info.videoOptions.firstOrNull { it.height == state.selectedVideoHeight }
-                match?.estimatedTotalBytes?.takeIf { it > 0L } ?: 0L
+                chosenVideo?.estimatedTotalBytes?.takeIf { it > 0L }
+                    ?: (info.videoOptions.firstOrNull { it.height == state.selectedVideoHeight }?.estimatedTotalBytes?.takeIf { it > 0L } ?: 0L)
             }
         } else {
             0L
@@ -236,7 +260,6 @@ class QualityPickerViewModel : ViewModel() {
         val cleanUrl = DualEngineMetadataResolver.sanitizeMediaUrl(info.url)
         val thumb = info.thumbnailUrl?.takeIf { it.isNotBlank() } ?: vid?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" }
 
-        val chosenVideo = info.videoOptions.firstOrNull { it.height == state.selectedVideoHeight }
         val chosenAudio = if (isAudio) {
             info.audioOptions.firstOrNull {
                 it.extension.equals(state.selectedAudioExtension, ignoreCase = true) &&
@@ -269,7 +292,10 @@ class QualityPickerViewModel : ViewModel() {
             enableAria2c = state.enableAria2cTurbo,
             concurrentFragments = 8,
             resolvedVideoStreamUrl = if (!isAudio) chosenVideo?.directStreamUrl else null,
-            resolvedAudioStreamUrl = if (isAudio) chosenAudio?.directStreamUrl else (chosenVideo?.matchedAudioStreamUrl ?: chosenAudio?.directStreamUrl)
+            resolvedAudioStreamUrl = if (isAudio) chosenAudio?.directStreamUrl else (chosenVideo?.matchedAudioStreamUrl ?: chosenAudio?.directStreamUrl),
+            directVideoUrl = if (!isAudio) chosenVideo?.directStreamUrl else null,
+            directAudioUrl = if (isAudio) chosenAudio?.directStreamUrl else (chosenVideo?.matchedAudioStreamUrl ?: chosenAudio?.directStreamUrl),
+            isDirectMuxed = if (isAudio) true else (chosenVideo?.isMuxed ?: false)
         )
     }
 }

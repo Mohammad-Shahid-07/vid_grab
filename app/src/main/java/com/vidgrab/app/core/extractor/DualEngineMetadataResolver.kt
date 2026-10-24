@@ -57,17 +57,56 @@ object DualEngineMetadataResolver {
 
     suspend fun resolve(payload: DownloadTriggerPayload): ResolvedMediaInfo = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
-        val cleanUrl = sanitizeMediaUrl(payload.url)
-        val targetVideoId = extractVideoId(cleanUrl)
-        val targetPlaylistId = if (targetVideoId == null) extractPlaylistId(cleanUrl) else null
-        val effectiveItemType = if (targetVideoId != null) "VIDEO"
-            else if (targetPlaylistId != null || cleanUrl.contains("/playlist") || cleanUrl.contains("list=")) "PLAYLIST"
-            else payload.itemType
+        val targetPlaylistId = extractPlaylistId(payload.url)
+        val cleanUrl = if (payload.itemType == "PLAYLIST" && targetPlaylistId != null) {
+            "https://www.youtube.com/playlist?list=$targetPlaylistId"
+        } else {
+            sanitizeMediaUrl(payload.url)
+        }
+        val targetVideoId = if (payload.itemType == "PLAYLIST") null else extractVideoId(cleanUrl)
+        val effectiveItemType = when {
+            payload.itemType == "PLAYLIST" -> "PLAYLIST"
+            payload.itemType == "CHANNEL" -> "CHANNEL"
+            payload.itemType == "VIDEO" -> "VIDEO"
+            targetPlaylistId != null && (payload.url.contains("/playlist") || !payload.url.contains("/watch")) -> "PLAYLIST"
+            targetVideoId != null -> "VIDEO"
+            targetPlaylistId != null -> "PLAYLIST"
+            else -> payload.itemType
+        }
 
         // =====================================================================
-        // TIER 1: Fast InnerTube Client (<200ms, raw ANDROID/IOS direct streams)
+        // TIER 1: In-Memory WebView Live JSON (<5ms, guaranteed exact CDN sizes & formats)
         // =====================================================================
         if (effectiveItemType == "VIDEO" && targetVideoId != null) {
+            val candidate = payload.inlinePlayerJson ?: if (WebViewSessionManager.latestVideoId == targetVideoId) {
+                WebViewSessionManager.latestPlayerResponseJson
+            } else null
+
+            if (!candidate.isNullOrBlank()) {
+                try {
+                    val root = JSONObject(candidate)
+                    val candidateVid = root.optJSONObject("videoDetails")?.optString("videoId")
+                    if (candidateVid == targetVideoId || candidateVid.isNullOrBlank()) {
+                        val memoryResult = parsePlayerResponseJson(
+                            payload = payload,
+                            root = root,
+                            targetVideoId = targetVideoId,
+                            source = ResolutionSource.TIER_1_WEBVIEW_MEMORY,
+                            startTime = startTime
+                        )
+                        if (memoryResult != null && (memoryResult.videoOptions.isNotEmpty() || memoryResult.audioOptions.isNotEmpty())) {
+                            Timber.i("DualEngine: Resolved %s via In-Memory Live Player Response in %d ms", targetVideoId, System.currentTimeMillis() - startTime)
+                            return@withContext memoryResult
+                        }
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "WebView memory parsing failed for %s", targetVideoId)
+                }
+            }
+
+            // =================================================================
+            // TIER 2: Fast InnerTube Client (<200ms, direct streams fallback)
+            // =================================================================
             try {
                 val innerTubeJson = InnerTubeFastClient.fetchPlayerResponse(targetVideoId)
                 if (innerTubeJson != null) {
@@ -84,36 +123,7 @@ object DualEngineMetadataResolver {
                     }
                 }
             } catch (e: Exception) {
-                Timber.w(e, "InnerTube Fast Client resolution failed for %s, falling back to WebView memory/NewPipe", targetVideoId)
-            }
-
-            // =================================================================
-            // TIER 2: In-Memory WebView JSON Fallback (<20ms, formats & sizes only)
-            // =================================================================
-            val candidate = payload.inlinePlayerJson ?: if (WebViewSessionManager.latestVideoId == targetVideoId) {
-                WebViewSessionManager.latestPlayerResponseJson
-            } else null
-
-            if (!candidate.isNullOrBlank()) {
-                try {
-                    val root = JSONObject(candidate)
-                    val candidateVid = root.optJSONObject("videoDetails")?.optString("videoId")
-                    if (candidateVid == targetVideoId) {
-                        val memoryResult = parsePlayerResponseJson(
-                            payload = payload,
-                            root = root,
-                            targetVideoId = targetVideoId,
-                            source = ResolutionSource.TIER_1_WEBVIEW_MEMORY,
-                            startTime = startTime
-                        )
-                        if (memoryResult != null && memoryResult.videoOptions.isNotEmpty()) {
-                            Timber.i("DualEngine: Resolved %s via WebView Memory (directUrls sanitized) in %d ms", targetVideoId, System.currentTimeMillis() - startTime)
-                            return@withContext memoryResult
-                        }
-                    }
-                } catch (e: Exception) {
-                    Timber.w(e, "WebView memory parsing failed for %s, proceeding to Tier 3", targetVideoId)
-                }
+                Timber.w(e, "InnerTube Fast Client resolution failed for %s, falling back to NewPipe", targetVideoId)
             }
         }
 
@@ -125,7 +135,7 @@ object DualEngineMetadataResolver {
                 "PLAYLIST" -> {
                     val canonicalPlaylistUrl = if (targetPlaylistId != null) {
                         "https://www.youtube.com/playlist?list=$targetPlaylistId"
-                    } else payload.url
+                    } else cleanUrl
 
                     var previewItems = emptyList<BatchPlaylistItem>()
                     var playlistTitle = payload.title
@@ -133,35 +143,133 @@ object DualEngineMetadataResolver {
                     var playlistThumb: String? = null
                     var totalCount = 0
 
-                    try {
-                        val playlistInfo = withTimeoutOrNull(4500L) {
-                            PlaylistInfo.getInfo(ServiceList.YouTube, canonicalPlaylistUrl)
-                        }
-                        if (playlistInfo != null) {
-                            playlistTitle = playlistInfo.name.orEmpty().ifBlank { payload.title }
-                            playlistAuthor = playlistInfo.uploaderName.orEmpty()
-                            playlistThumb = playlistInfo.thumbnails.firstOrNull()?.url
-                            totalCount = playlistInfo.streamCount.toInt()
-
-                            previewItems = playlistInfo.relatedItems.map { item ->
-                                val cUrl = when {
-                                    item.url.isNullOrBlank() -> ""
-                                    item.url.startsWith("http://") || item.url.startsWith("https://") -> item.url
-                                    item.url.startsWith("/") -> "https://www.youtube.com${item.url}"
-                                    else -> "https://www.youtube.com/watch?v=${item.url}"
+                    // Tier 1: In-Page Extracted Items (<1ms, instant & zero network overhead)
+                    if (!payload.playlistItemsJson.isNullOrBlank()) {
+                        try {
+                            val arr = org.json.JSONArray(payload.playlistItemsJson)
+                            val parsed = mutableListOf<BatchPlaylistItem>()
+                            for (i in 0 until arr.length()) {
+                                val obj = arr.getJSONObject(i)
+                                val vUrl = obj.optString("url")
+                                val vTitle = obj.optString("title").ifBlank { "Video #${i + 1}" }
+                                val vAuthor = obj.optString("author").ifBlank { "YouTube" }
+                                val vDur = obj.optLong("durationSeconds", 0L)
+                                val vThumb = obj.optString("thumbnailUrl").takeIf { it.isNotBlank() }
+                                if (vUrl.isNotBlank()) {
+                                    parsed.add(
+                                        BatchPlaylistItem(
+                                            url = vUrl,
+                                            title = vTitle,
+                                            author = vAuthor,
+                                            durationSeconds = vDur,
+                                            thumbnailUrl = vThumb,
+                                            isSelected = true
+                                        )
+                                    )
                                 }
-                                BatchPlaylistItem(
-                                    url = cUrl,
-                                    title = item.name.orEmpty().ifBlank { "YouTube Video" },
-                                    author = item.uploaderName.orEmpty(),
-                                    durationSeconds = item.duration,
-                                    thumbnailUrl = item.thumbnails.firstOrNull()?.url,
-                                    isSelected = true
-                                )
-                            }.filter { it.url.isNotBlank() }
+                            }
+                            if (parsed.isNotEmpty()) {
+                                previewItems = parsed
+                                totalCount = parsed.size
+                                playlistThumb = parsed.firstOrNull()?.thumbnailUrl
+                                Timber.i("DualEngine: Resolved %d playlist items via In-Page DOM in %d ms", parsed.size, System.currentTimeMillis() - startTime)
+                            }
+                        } catch (e: Exception) {
+                            Timber.w(e, "Failed to parse in-page playlistItemsJson")
                         }
-                    } catch (e: Exception) {
-                        Timber.w(e, "NewPipe Playlist resolution failed for %s", canonicalPlaylistUrl)
+                    }
+
+                    // Tier 2: InnerTube API Client Fallback (<250ms, direct JSON API)
+                    if (previewItems.isEmpty() && targetPlaylistId != null) {
+                        try {
+                            val innerTubeItems = InnerTubeFastClient.fetchPlaylist(targetPlaylistId)
+                            if (innerTubeItems.isNotEmpty()) {
+                                previewItems = innerTubeItems
+                                totalCount = innerTubeItems.size
+                                playlistThumb = innerTubeItems.firstOrNull()?.thumbnailUrl
+                                Timber.i("DualEngine: Resolved %d playlist items via InnerTube API in %d ms", innerTubeItems.size, System.currentTimeMillis() - startTime)
+                            }
+                        } catch (e: Exception) {
+                            Timber.w(e, "InnerTube fetchPlaylist failed for %s", targetPlaylistId)
+                        }
+                    }
+
+                    // Tier 3: NewPipe Extractor JVM Fallback
+                    if (previewItems.isEmpty()) {
+                        try {
+                            val playlistInfo = withTimeoutOrNull(5000L) {
+                                PlaylistInfo.getInfo(ServiceList.YouTube, canonicalPlaylistUrl)
+                            }
+                            if (playlistInfo != null) {
+                                playlistTitle = playlistInfo.name.orEmpty().ifBlank { payload.title }
+                                playlistAuthor = playlistInfo.uploaderName.orEmpty()
+                                playlistThumb = playlistInfo.thumbnails.firstOrNull()?.url
+                                totalCount = playlistInfo.streamCount.toInt()
+
+                                previewItems = playlistInfo.relatedItems.map { item ->
+                                    val cUrl = when {
+                                        item.url.isNullOrBlank() -> ""
+                                        item.url.startsWith("http://") || item.url.startsWith("https://") -> item.url
+                                        item.url.startsWith("/") -> "https://www.youtube.com${item.url}"
+                                        else -> "https://www.youtube.com/watch?v=${item.url}"
+                                    }
+                                    BatchPlaylistItem(
+                                        url = cUrl,
+                                        title = item.name.orEmpty().ifBlank { "YouTube Video" },
+                                        author = item.uploaderName.orEmpty(),
+                                        durationSeconds = item.duration,
+                                        thumbnailUrl = item.thumbnails.firstOrNull()?.url,
+                                        isSelected = true
+                                    )
+                                }.filter { it.url.isNotBlank() }
+                            }
+                        } catch (e: Exception) {
+                            Timber.w(e, "NewPipe Playlist resolution failed for %s", canonicalPlaylistUrl)
+                        }
+                    }
+
+                    // Tier 4: yt-dlp --flat-playlist Fallback (Zero-failure binary fallback)
+                    if (previewItems.isEmpty()) {
+                        try {
+                            val req = com.yausername.youtubedl_android.YoutubeDLRequest(canonicalPlaylistUrl).apply {
+                                addOption("--flat-playlist")
+                                addOption("-J")
+                                addOption("--no-warnings")
+                            }
+                            val res = com.yausername.youtubedl_android.YoutubeDL.getInstance().execute(req)
+                            val root = JSONObject(res.out)
+                            val entries = root.optJSONArray("entries")
+                            if (entries != null) {
+                                val ytdlItems = mutableListOf<BatchPlaylistItem>()
+                                for (i in 0 until entries.length()) {
+                                    val entry = entries.getJSONObject(i)
+                                    val eId = entry.optString("id")
+                                    val eTitle = entry.optString("title").ifBlank { "Video #${i + 1}" }
+                                    val eAuthor = entry.optString("uploader").ifBlank { playlistAuthor }
+                                    val eDur = entry.optLong("duration", 0L)
+                                    val eThumb = "https://i.ytimg.com/vi/$eId/hqdefault.jpg"
+                                    if (eId.isNotBlank()) {
+                                        ytdlItems.add(
+                                            BatchPlaylistItem(
+                                                url = "https://www.youtube.com/watch?v=$eId",
+                                                title = eTitle,
+                                                author = eAuthor,
+                                                durationSeconds = eDur,
+                                                thumbnailUrl = eThumb,
+                                                isSelected = true
+                                            )
+                                        )
+                                    }
+                                }
+                                if (ytdlItems.isNotEmpty()) {
+                                    previewItems = ytdlItems
+                                    totalCount = ytdlItems.size
+                                    Timber.i("DualEngine: Resolved %d playlist items via yt-dlp in %d ms", ytdlItems.size, System.currentTimeMillis() - startTime)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Timber.w(e, "yt-dlp flat-playlist resolution failed for %s", canonicalPlaylistUrl)
+                        }
                     }
 
                     if (previewItems.isEmpty()) {
@@ -286,8 +394,8 @@ object DualEngineMetadataResolver {
                                     container = "mp4",
                                     estimatedTotalBytes = combinedBytes,
                                     formatSelector = FormatSelectorBuilder.buildVideoSelector(resHeight),
-                                    directStreamUrl = vs.content ?: vs.url,
-                                    matchedAudioStreamUrl = bestAudio?.content ?: bestAudio?.url
+                                    directStreamUrl = vs.content ?: @Suppress("DEPRECATION") vs.url,
+                                    matchedAudioStreamUrl = bestAudio?.content ?: @Suppress("DEPRECATION") bestAudio?.url
                                 )
                             }
 
@@ -305,7 +413,7 @@ object DualEngineMetadataResolver {
                                 bitrateKbps = bitrateKbps,
                                 estimatedBytes = aBytes,
                                 formatSelector = FormatSelectorBuilder.buildAudioSelector(ext),
-                                directStreamUrl = a.content ?: a.url
+                                directStreamUrl = a.content ?: @Suppress("DEPRECATION") a.url
                             )
                         }.distinctBy { "${it.extension}_${it.bitrateKbps}" }
 
@@ -395,8 +503,7 @@ object DualEngineMetadataResolver {
             val mimeType = format.optString("mimeType")
             if (mimeType.startsWith("audio/")) {
                 val rawAudioUrl = format.optString("url").takeIf { it.isNotBlank() }
-                val isAudioFromWeb = rawAudioUrl?.contains("c=MWEB") == true || rawAudioUrl?.contains("c=WEB") == true
-                val directUrl = if (source == ResolutionSource.TIER_1_WEBVIEW_MEMORY || isAudioFromWeb) null else rawAudioUrl
+                val directUrl = rawAudioUrl?.takeIf { it.startsWith("http") }
 
                 // 3-Step Size Hierarchy
                 var contentLength = format.optString("contentLength").toLongOrNull() ?: format.optLong("contentLength", 0L)
@@ -440,8 +547,8 @@ object DualEngineMetadataResolver {
             bestAudioBytes = (128000L * durationSec) / 8L
         }
 
-        // 2. Process Video Streams
-        val videoMap = mutableMapOf<Int, VideoQualityOption>()
+        // 2. Process Video Streams (Preserve distinct codec variants: H.264, VP9, AV1)
+        val videoVariants = mutableMapOf<String, VideoQualityOption>()
 
         for (i in 0 until adaptiveFormats.length()) {
             val format = adaptiveFormats.optJSONObject(i) ?: continue
@@ -451,8 +558,7 @@ object DualEngineMetadataResolver {
                 if (height > 0) {
                     val fps = format.optInt("fps", 30)
                     val rawVideoUrl = format.optString("url").takeIf { it.isNotBlank() }
-                    val isVideoFromWeb = rawVideoUrl?.contains("c=MWEB") == true || rawVideoUrl?.contains("c=WEB") == true
-                    val directUrl = if (source == ResolutionSource.TIER_1_WEBVIEW_MEMORY || isVideoFromWeb) null else rawVideoUrl
+                    val directUrl = rawVideoUrl?.takeIf { it.startsWith("http") }
 
                     // 3-Step Size Hierarchy
                     var contentLength = format.optString("contentLength").toLongOrNull() ?: format.optLong("contentLength", 0L)
@@ -484,7 +590,17 @@ object DualEngineMetadataResolver {
                     val totalSize = rawVideoSize + bestAudioBytes
 
                     val isAvc = mimeType.contains("avc1")
-                    val codecBadge = if (isAvc) "H.264" else "VP9"
+                    val isAv01 = mimeType.contains("av01")
+                    val isVp9 = mimeType.contains("vp9") || mimeType.contains("vp09")
+                    val codecBadge = when {
+                        isAvc -> "H.264"
+                        isAv01 -> "AV1"
+                        isVp9 -> "VP9"
+                        else -> "VP9"
+                    }
+                    val container = if (isAvc || isAv01) "mp4" else "webm"
+                    val fpsTag = if (fps >= 50) "60" else "30"
+                    val variantKey = "$height-$codecBadge-$fpsTag"
 
                     val label = when (height) {
                         2160 -> "4K Ultra HD"
@@ -498,25 +614,75 @@ object DualEngineMetadataResolver {
                         else -> "${height}p"
                     }
 
-                    val existing = videoMap[height]
-                    if (existing == null || (isAvc && existing.vcodec != "H.264") || (existing.directStreamUrl == null && directUrl != null)) {
-                        videoMap[height] = VideoQualityOption(
+                    val existing = videoVariants[variantKey]
+                    if (existing == null || (existing.directStreamUrl == null && directUrl != null)) {
+                        videoVariants[variantKey] = VideoQualityOption(
                             height = height,
                             label = label,
                             fps = fps,
                             vcodec = codecBadge,
-                            container = "mp4",
+                            container = container,
                             estimatedTotalBytes = totalSize,
-                            formatSelector = FormatSelectorBuilder.buildVideoSelector(height),
+                            formatSelector = FormatSelectorBuilder.buildVideoSelector(height, codecBadge),
                             directStreamUrl = directUrl,
-                            matchedAudioStreamUrl = bestAudioDirectUrl
+                            matchedAudioStreamUrl = bestAudioDirectUrl,
+                            isMuxed = false
                         )
                     }
                 }
             }
         }
 
-        val videoOptions = videoMap.values.sortedByDescending { it.height }
+        // 3. Process Progressive Pre-Muxed Formats (e.g., 360p itag 18, 720p itag 22)
+        val progressiveFormats = streamingData.optJSONArray("formats")
+        if (progressiveFormats != null) {
+            for (i in 0 until progressiveFormats.length()) {
+                val format = progressiveFormats.optJSONObject(i) ?: continue
+                val mimeType = format.optString("mimeType")
+                if (!mimeType.startsWith("video/")) continue
+                val height = format.optInt("height", 0)
+                if (height <= 0) continue
+
+                val rawUrl = format.optString("url").takeIf { it.isNotBlank() }
+                val directUrl = rawUrl?.takeIf { it.startsWith("http") }
+
+                var contentLength = format.optString("contentLength").toLongOrNull() ?: format.optLong("contentLength", 0L)
+                if (contentLength <= 0L && rawUrl != null && rawUrl.contains("clen=")) {
+                    contentLength = rawUrl.substringAfter("clen=").substringBefore("&").toLongOrNull() ?: 0L
+                }
+
+                val bitrate = format.optLong("averageBitrate", 0L).takeIf { it > 0L }
+                    ?: format.optLong("bitrate", 500000L)
+                val totalSize = if (contentLength > 0L) contentLength else (bitrate * durationSec) / 8L
+
+                val variantKey = "$height-H.264-30"
+                val existing = videoVariants[variantKey]
+                if (existing == null || (height <= 360 && directUrl != null)) {
+                    val label = when (height) {
+                        360 -> "360p Medium"
+                        else -> "${height}p"
+                    }
+                    videoVariants[variantKey] = VideoQualityOption(
+                        height = height,
+                        label = label,
+                        fps = format.optInt("fps", 30),
+                        vcodec = "H.264",
+                        container = "mp4",
+                        estimatedTotalBytes = totalSize,
+                        formatSelector = FormatSelectorBuilder.buildVideoSelector(height),
+                        directStreamUrl = directUrl,
+                        matchedAudioStreamUrl = null,
+                        isMuxed = true
+                    )
+                }
+            }
+        }
+
+        val videoOptions = videoVariants.values.sortedWith(
+            compareByDescending<VideoQualityOption> { it.height }
+                .thenBy { if (it.vcodec == "H.264") 0 else if (it.vcodec == "VP9") 1 else 2 }
+                .thenByDescending { it.fps }
+        )
         val audioOptions = audioList.distinctBy { "${it.extension}_${it.bitrateKbps}" }
 
         if (videoOptions.isEmpty()) return null

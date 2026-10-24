@@ -9,13 +9,20 @@ package com.vidgrab.app.core.extractor
 object FormatSelectorBuilder {
 
     /**
-     * Builds the yt-dlp video format selector for a given max height constraint.
+     * Builds the yt-dlp video format selector for a given max height constraint and codec preference.
      */
-    fun buildVideoSelector(height: Int): String {
-        return "bestvideo[height<=$height][vcodec^=avc1]+bestaudio[acodec^=mp4a]/" +
-                "bestvideo[height<=$height][ext=mp4]+bestaudio[ext=m4a]/" +
-                "bestvideo[height<=$height]+bestaudio/" +
-                "best[height<=$height]/best"
+    fun buildVideoSelector(height: Int, vcodec: String = "H.264"): String {
+        return when (vcodec) {
+            "VP9" -> "bestvideo[height<=$height][vcodec^=vp9]+bestaudio[acodec^=opus]/" +
+                    "bestvideo[height<=$height][vcodec^=vp09]+bestaudio/" +
+                    "bestvideo[height<=$height]+bestaudio/best"
+            "AV1" -> "bestvideo[height<=$height][vcodec^=av01]+bestaudio[acodec^=opus]/" +
+                    "bestvideo[height<=$height]+bestaudio/best"
+            else -> "bestvideo[height<=$height][vcodec^=avc1]+bestaudio[acodec^=mp4a]/" +
+                    "bestvideo[height<=$height][ext=mp4]+bestaudio[ext=m4a]/" +
+                    "bestvideo[height<=$height]+bestaudio/" +
+                    "best[height<=$height]/best"
+        }
     }
 
     /**

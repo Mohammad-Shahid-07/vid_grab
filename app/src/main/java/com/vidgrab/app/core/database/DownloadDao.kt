@@ -41,6 +41,9 @@ interface DownloadDao {
     """)
     fun getActiveTasksFlow(): Flow<List<DownloadTaskEntity>>
 
+    @Query("SELECT COUNT(*) FROM download_tasks WHERE status IN ('DOWNLOADING', 'MERGING')")
+    suspend fun getActiveDownloadingCount(): Int
+
     @Query("SELECT * FROM download_tasks WHERE status = 'COMPLETED' ORDER BY updatedAt DESC")
     fun getCompletedTasksFlow(): Flow<List<DownloadTaskEntity>>
 

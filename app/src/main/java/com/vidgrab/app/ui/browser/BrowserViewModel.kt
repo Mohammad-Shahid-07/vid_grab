@@ -78,15 +78,20 @@ class BrowserViewModel : ViewModel() {
     /**
      * Synthesizes a download trigger payload from the current browser state for the native FAB.
      */
-    fun createFabDownloadPayload(overrideUrl: String? = null, overrideTitle: String? = null): DownloadTriggerPayload {
+    fun createFabDownloadPayload(
+        overrideUrl: String? = null,
+        overrideTitle: String? = null,
+        overrideInlineJson: String? = null
+    ): DownloadTriggerPayload {
         val url = overrideUrl?.takeIf { it.isNotBlank() } ?: _currentUrl.value
         val title = overrideTitle?.takeIf { it.isNotBlank() } ?: _pageTitle.value
         val type = classifyUrl(url)
 
         val targetVid = com.vidgrab.app.core.extractor.DualEngineMetadataResolver.extractVideoId(url)
-        val inlineJson = if (type == "VIDEO" && targetVid != null && WebViewSessionManager.latestVideoId == targetVid) {
-            WebViewSessionManager.latestPlayerResponseJson
-        } else null
+        val inlineJson = overrideInlineJson?.takeIf { it.isNotBlank() }
+            ?: if (type == "VIDEO" && targetVid != null && WebViewSessionManager.latestVideoId == targetVid) {
+                WebViewSessionManager.latestPlayerResponseJson
+            } else null
 
         var durationSec = 0L
         if (!inlineJson.isNullOrBlank()) {

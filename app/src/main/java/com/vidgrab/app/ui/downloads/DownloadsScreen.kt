@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import com.vidgrab.app.core.database.DownloadTaskEntity
 import com.vidgrab.app.core.database.TaskStatus
+import com.vidgrab.app.core.extractor.formatBytes
 import com.vidgrab.app.core.queue.QueueRepository
 import com.vidgrab.app.ui.common.AsyncThumbnailImage
 import com.vidgrab.app.ui.theme.AppTheme
@@ -414,10 +415,14 @@ fun DownloadCard(
     onResume: () -> Unit,
     onCancel: () -> Unit
 ) {
+    val hasDownloadStarted = task.progressPercent > 2.1f ||
+            task.downloadedBytes > 0L ||
+            task.speedText.contains("/s", ignoreCase = true) ||
+            task.speedText.equals("Downloading...", ignoreCase = true) ||
+            task.speedText.contains("Merging", ignoreCase = true)
+
     val isConnecting = (task.status == TaskStatus.DOWNLOADING || task.status == TaskStatus.PENDING || task.status == TaskStatus.EXPANDING) &&
-            (task.downloadedBytes == 0L || task.progressPercent <= 2f) &&
-            !task.speedText.contains("/s") &&
-            !task.speedText.contains("Merging")
+            !hasDownloadStarted
 
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(isConnecting) {
@@ -704,16 +709,6 @@ fun EmptyDownloadsPlaceholder(message: String) {
             color = theme.textSecondary,
             fontSize = 14.sp
         )
-    }
-}
-
-private fun formatBytes(bytes: Long): String {
-    if (bytes <= 0) return "0 MB"
-    val mb = bytes / (1024f * 1024f)
-    return if (mb >= 1000f) {
-        String.format(Locale.US, "%.1f GB", mb / 1024f)
-    } else {
-        String.format(Locale.US, "%.1f MB", mb)
     }
 }
 

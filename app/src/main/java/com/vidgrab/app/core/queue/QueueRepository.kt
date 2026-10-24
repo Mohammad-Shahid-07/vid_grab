@@ -140,7 +140,10 @@ class QueueRepository(private val context: Context) {
                     embedChapters = spec.embedChapters,
                     downloadFolder = spec.downloadFolder,
                     resolvedVideoStreamUrl = spec.resolvedVideoStreamUrl,
-                    resolvedAudioStreamUrl = spec.resolvedAudioStreamUrl
+                    resolvedAudioStreamUrl = spec.resolvedAudioStreamUrl,
+                    directVideoUrl = spec.directVideoUrl ?: spec.resolvedVideoStreamUrl,
+                    directAudioUrl = spec.directAudioUrl ?: spec.resolvedAudioStreamUrl,
+                    isDirectMuxed = spec.isDirectMuxed
                 )
                 dao.insertTask(entity)
                 Timber.i("QueueRepository: Enqueued single download: %s [%s] with thumb: %s", spec.title, spec.formatSelector, effectiveThumb)
@@ -220,16 +223,20 @@ class QueueRepository(private val context: Context) {
     }
 
     fun startQueueWorker() {
-        val request = OneTimeWorkRequestBuilder<DownloadQueueWorker>()
-            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-            .build()
+        scope.launch {
+            val activeCount = dao.getActiveDownloadingCount()
+            val policy = if (activeCount == 0) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
+            val request = OneTimeWorkRequestBuilder<DownloadQueueWorker>()
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                .build()
 
-        workManager.enqueueUniqueWork(
-            WORK_NAME,
-            ExistingWorkPolicy.KEEP,
-            request
-        )
-        Timber.d("QueueRepository: Scheduled OneTimeWorkRequest for DownloadQueueWorker")
+            workManager.enqueueUniqueWork(
+                WORK_NAME,
+                policy,
+                request
+            )
+            Timber.d("QueueRepository: Scheduled OneTimeWorkRequest for DownloadQueueWorker (activeCount=%d, policy=%s)", activeCount, policy)
+        }
     }
 
     fun pauseTask(taskId: String) {

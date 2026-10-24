@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -63,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vidgrab.app.core.extractor.DownloadRequestSpec
 import com.vidgrab.app.core.extractor.ResolvedMediaInfo
+import com.vidgrab.app.core.extractor.VideoQualityOption
 import com.vidgrab.app.core.extractor.formatBytes
 import com.vidgrab.app.ui.theme.AppTheme
 
@@ -111,6 +113,7 @@ fun QualityPickerBottomSheet(
                             state = uiState,
                             onTabSelected = { isAudioOnly -> viewModel.selectTab(isAudioOnly) },
                             onVideoHeightSelected = { h -> viewModel.selectVideoHeight(h) },
+                            onVideoVariantSelected = { variant -> viewModel.selectVideoVariant(variant) },
                             onAudioSelected = { ext, br -> viewModel.selectAudio(ext, br) },
                             onToggleBatchItem = { url -> viewModel.toggleBatchItem(url) },
                             onToggleSelectAll = { selectAll -> viewModel.toggleSelectAllBatch(selectAll) },
@@ -174,6 +177,7 @@ fun SuccessContentView(
     state: QualityPickerUiState.Success,
     onTabSelected: (Boolean) -> Unit,
     onVideoHeightSelected: (Int) -> Unit,
+    onVideoVariantSelected: (VideoQualityOption) -> Unit,
     onAudioSelected: (String, Int) -> Unit,
     onToggleBatchItem: (String) -> Unit,
     onToggleSelectAll: (Boolean) -> Unit,
@@ -204,6 +208,9 @@ fun SuccessContentView(
 
     fun calculateVideoSizeText(height: Int): String {
         if (!isBatch) {
+            if (height == state.selectedVideoHeight && state.selectedVideoOption != null && state.selectedVideoOption.estimatedTotalBytes > 0L) {
+                return state.selectedVideoOption.formattedSize
+            }
             val match = info.videoOptions.firstOrNull { it.height == height }
             if (match != null && match.estimatedTotalBytes > 0L) {
                 return match.formattedSize
@@ -319,49 +326,146 @@ fun SuccessContentView(
         ) {
             // 3. 3-Column Quality Selector Grid with Dynamic Sizes
             if (!state.isAudioOnlyTab) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                info.videoOptions.chunked(3).forEach { rowOptions ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        rowOptions.forEach { option ->
-                            val isSelected = option.height == state.selectedVideoHeight
-                            val sizeLabel = if (isBatch) calculateVideoSizeText(option.height) else option.formattedSize
-                            val qualityBadge = when (option.height) {
-                                2160 -> "4K UHD"
-                                1440 -> "2K QHD"
-                                1080 -> "Full HD"
-                                720 -> "HD"
-                                480 -> "Standard"
-                                360 -> "Medium"
-                                240 -> "Compact"
-                                144 -> "Data Saver"
-                                else -> "${option.height}p"
+                val distinctHeights = remember(info.videoOptions) {
+                    info.videoOptions.map { it.height }.distinct().sortedDescending()
+                }
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    distinctHeights.chunked(3).forEach { rowHeights ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowHeights.forEach { height ->
+                                val isSelected = height == state.selectedVideoHeight
+                                val defaultOptionForHeight = remember(info.videoOptions, height) {
+                                    info.videoOptions.firstOrNull { it.height == height && it.vcodec == "H.264" }
+                                        ?: info.videoOptions.firstOrNull { it.height == height }
+                                }
+                                val displayOption = if (isSelected) (state.selectedVideoOption ?: defaultOptionForHeight) else defaultOptionForHeight
+                                val sizeLabel = if (isBatch) calculateVideoSizeText(height) else (displayOption?.formattedSize ?: "")
+                                val qualityBadge = when (height) {
+                                    2160 -> "4K UHD"
+                                    1440 -> "2K QHD"
+                                    1080 -> "Full HD"
+                                    720 -> "HD"
+                                    480 -> "Standard"
+                                    360 -> "Medium"
+                                    240 -> "Compact"
+                                    144 -> "Data Saver"
+                                    else -> "${height}p"
+                                }
+                                val cardSubtitle = if (sizeLabel.isNotBlank()) sizeLabel else qualityBadge
+                                Box(modifier = Modifier.weight(1f)) {
+                                    FloatingQualityGridCard(
+                                        title = "${height}p",
+                                        sizeText = cardSubtitle,
+                                        isSelected = isSelected,
+                                        onClick = {
+                                            onVideoHeightSelected(height)
+                                        }
+                                    )
+                                }
                             }
-                            val cardSubtitle = if (sizeLabel.isNotBlank()) sizeLabel else qualityBadge
-                            Box(modifier = Modifier.weight(1f)) {
-                                FloatingQualityGridCard(
-                                    title = "${option.height}p",
-                                    sizeText = cardSubtitle,
-                                    isSelected = isSelected,
-                                    onClick = {
-                                        onVideoHeightSelected(option.height)
-                                    }
-                                )
+                            val remainder = 3 - rowHeights.size
+                            repeat(remainder) {
+                                Spacer(modifier = Modifier.weight(1f))
                             }
-                        }
-                        val remainder = 3 - rowOptions.size
-                        repeat(remainder) {
-                            Spacer(modifier = Modifier.weight(1f))
                         }
                     }
                 }
-            }
-        } else {
+
+                // Sleek Dynamic Codec Sub-Pill Row for Selected Resolution (Approach A)
+                if (!isBatch) {
+                    val variantsForSelected = remember(info.videoOptions, state.selectedVideoHeight) {
+                        info.videoOptions.filter { it.height == state.selectedVideoHeight }
+                    }
+                    if (variantsForSelected.size > 1) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 2.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Format / Codec Options",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = theme.textSecondary
+                            )
+                            Text(
+                                text = "${variantsForSelected.size} options available",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Normal,
+                                color = theme.textMuted
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            variantsForSelected.forEach { variant ->
+                                val isVariantSelected = state.selectedVideoOption?.let {
+                                    it.vcodec == variant.vcodec && it.fps == variant.fps && it.container == variant.container && it.directStreamUrl == variant.directStreamUrl
+                                } ?: (variant == variantsForSelected.first())
+
+                                val fpsTag = if (variant.fps >= 50) " 60fps" else ""
+                                val variantTitle = "${variant.vcodec}$fpsTag · ${variant.container.uppercase()}"
+                                val variantSize = variant.formattedSize
+
+                                Surface(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { onVideoVariantSelected(variant) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isVariantSelected) accent.color.copy(alpha = 0.16f) else theme.pillTrackBg,
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isVariantSelected) accent.color else theme.dividerColor.copy(alpha = 0.5f)
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        if (isVariantSelected) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(6.dp)
+                                                    .clip(CircleShape)
+                                                    .background(accent.color)
+                                            )
+                                        }
+                                        Text(
+                                            text = variantTitle,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isVariantSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isVariantSelected) accent.color else theme.textPrimary
+                                        )
+                                        if (variantSize.isNotBlank()) {
+                                            Text(
+                                                text = "($variantSize)",
+                                                fontSize = 10.sp,
+                                                fontWeight = if (isVariantSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                                color = if (isVariantSelected) accent.color else theme.textSecondary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
             val distinctAudios = remember(info.audioOptions) {
                 info.audioOptions.distinctBy { "${it.extension.lowercase()}_${it.bitrateKbps}" }
             }
@@ -710,12 +814,13 @@ fun SuccessContentView(
             }
         } else {
             val ctaSize = if (!state.isAudioOnlyTab) {
-                calculateVideoSizeText(state.selectedVideoHeight)
+                state.selectedVideoOption?.formattedSize?.takeIf { it.isNotBlank() } ?: calculateVideoSizeText(state.selectedVideoHeight)
             } else {
                 calculateAudioSizeText(state.selectedAudioExtension, state.selectedAudioBitrateKbps)
             }
             val ctaLabel = if (!state.isAudioOnlyTab) {
-                if (ctaSize.isNotBlank()) "Download ${state.selectedVideoHeight}p ($ctaSize)" else "Download ${state.selectedVideoHeight}p"
+                val codecStr = state.selectedVideoOption?.let { " · ${it.vcodec}" } ?: ""
+                if (ctaSize.isNotBlank()) "Download ${state.selectedVideoHeight}p$codecStr ($ctaSize)" else "Download ${state.selectedVideoHeight}p$codecStr"
             } else {
                 val label = "${state.selectedAudioExtension.uppercase()} ${if (state.selectedAudioBitrateKbps > 0) "${state.selectedAudioBitrateKbps}k" else ""}".trim()
                 if (ctaSize.isNotBlank()) "Download $label ($ctaSize)" else "Download $label"

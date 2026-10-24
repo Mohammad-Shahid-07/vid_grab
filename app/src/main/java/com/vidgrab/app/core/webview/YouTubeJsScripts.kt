@@ -21,6 +21,12 @@ object YouTubeJsScripts {
 
     val INJECTION_SCRIPT: String = """
 (function() {
+    if (window.__VIDGRAB_INJECTED__) {
+        if (window.__vidgrabScanNodes) window.__vidgrabScanNodes();
+        return;
+    }
+    window.__VIDGRAB_INJECTED__ = true;
+
     // =========================================================================
     // SECTION 0: Brave-Style Background Play (Page Visibility API Spoof)
     // =========================================================================
@@ -156,14 +162,6 @@ object YouTubeJsScripts {
         }
     }
 
-    if (window.__VIDGRAB_INJECTED__) {
-        if (window.__vidgrabScanNodes) window.__vidgrabScanNodes();
-        injectAdBlockStyles();
-        attachToAllVideos();
-        return;
-    }
-    window.__VIDGRAB_INJECTED__ = true;
-
     // =========================================================================
     // SECTION 1: BotGuard Tokens & uBlock-Origin json-prune Sanitization
     // =========================================================================
@@ -209,20 +207,184 @@ object YouTubeJsScripts {
         return payload;
     }
 
-    function checkInitialPlayerResponse() {
+    function parsePlayerObject(text, start) {
+        while (/\s/.test(text[start] || '') && start < text.length) start++;
+        if (text[start] !== '{') throw new SyntaxError('Expected object');
+        var depth = 0, quoted = false, escaped = false;
+        for (var i = start; i < text.length; i++) {
+            var c = text[i];
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (c === '\\') escaped = true;
+                else if (c === '"') quoted = false;
+            } else if (c === '"') quoted = true;
+            else if (c === '{') depth++;
+            else if (c === '}' && --depth === 0) return JSON.parse(text.slice(start, i + 1));
+        }
+        throw new SyntaxError('Incomplete player response');
+    }
+
+    function getCurrentVideoId() {
         try {
-            if (window.ytInitialPlayerResponse) {
-                sanitizePlayerResponse(window.ytInitialPlayerResponse);
-                if (window.ytInitialPlayerResponse.videoDetails) {
-                    var vid = window.ytInitialPlayerResponse.videoDetails.videoId;
-                    var jsonStr = JSON.stringify(window.ytInitialPlayerResponse);
-                    if (window.VidGrabBridge && window.VidGrabBridge.onPlayerResponse) {
-                        window.VidGrabBridge.onPlayerResponse(vid, jsonStr);
+            var url = new URL(window.location.href);
+            var path = url.pathname;
+            if (path === '/watch') return url.searchParams.get('v') || '';
+            var match = /^\/(?:shorts|live|v|embed)\/([\w-]+)\/?$/.exec(path);
+            if (match && match[1]) return match[1];
+            var player = document.getElementById('movie_player') || document.getElementById('shorts-player');
+            if (player && typeof player.getVideoData === 'function') {
+                var source = player.getVideoData().video_id;
+                if (source && source !== 'videoseries' && source !== 'live_stream') return source;
+            }
+        } catch (e) {}
+        return '';
+    }
+
+    function readPlayerResponseFromPage(wantedVid) {
+        function accept(val, playerId) {
+            if (!val || typeof val !== 'object') return null;
+            var vid = val.videoDetails && val.videoDetails.videoId;
+            if (!wantedVid || vid === wantedVid || (!vid && playerId === wantedVid)) return val;
+            return null;
+        }
+
+        // 1. Inspect HTML5 player instances (movie_player, shorts-player)
+        var playerIds = ['shorts-player', 'movie_player', 'player'];
+        for (var i = 0; i < playerIds.length; i++) {
+            var el = document.getElementById(playerIds[i]);
+            if (el && typeof el.getPlayerResponse === 'function') {
+                var playerId = (el.getVideoData && typeof el.getVideoData === 'function') ? el.getVideoData().video_id : null;
+                var res = accept(el.getPlayerResponse(), playerId);
+                if (res && res.streamingData) return res;
+            }
+        }
+
+        // 2. Check window.__vidgrabLatestPlayerResponse
+        if (window.__vidgrabLatestPlayerResponse) {
+            var res = accept(window.__vidgrabLatestPlayerResponse);
+            if (res && res.streamingData) return res;
+        }
+
+        // 3. Check window.ytInitialPlayerResponse
+        if (window.ytInitialPlayerResponse) {
+            var res = accept(window.ytInitialPlayerResponse);
+            if (res && res.streamingData) return res;
+        }
+
+        // 4. Scan document <script> tags for ytInitialPlayerResponse assignment
+        var scripts = document.getElementsByTagName('script');
+        var pattern = /\bytInitialPlayerResponse\s*=\s*/g;
+        for (var s = 0; s < scripts.length; s++) {
+            var text = scripts[s].textContent || '';
+            var match;
+            while ((match = pattern.exec(text)) !== null) {
+                try {
+                    var parsed = accept(parsePlayerObject(text, pattern.lastIndex));
+                    if (parsed && parsed.streamingData) return parsed;
+                } catch (e) {}
+            }
+        }
+        return null;
+    }
+
+    // 1DM In-Browser Direct Stream Fetcher (VISIONOS client contract)
+    // Runs inside browser session: bypasses bot-check/sign-in requirements & supplies unthrottled direct URLs
+    async function fetchVisionOsResponse(wantedVid) {
+        if (!wantedVid) return null;
+        try {
+            var config = window.ytcfg;
+            var visitor = config && typeof config.get === 'function' ? config.get('VISITOR_DATA') : '';
+            var headers = {
+                'Content-Type': 'application/json',
+                'X-Youtube-Client-Name': '101',
+                'X-Youtube-Client-Version': '1.02'
+            };
+            if (visitor) headers['X-Goog-Visitor-Id'] = visitor;
+
+            var client = {
+                clientName: 'VISIONOS',
+                clientVersion: '1.02',
+                hl: 'en',
+                deviceMake: 'Apple',
+                deviceModel: 'RealityDevice17,1',
+                osName: 'visionOS',
+                osVersion: '26.5.23O471',
+                userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15'
+            };
+            if (visitor) client.visitorData = visitor;
+
+            var body = JSON.stringify({
+                videoId: wantedVid,
+                context: { client: client },
+                playbackContext: {
+                    contentPlaybackContext: {
+                        html5Preference: 'HTML5_PREF_WANTS'
                     }
                 }
+            });
+
+            var resp = await window.fetch('/youtubei/v1/player?prettyPrint=false', {
+                method: 'POST',
+                headers: headers,
+                body: body,
+                credentials: 'omit'
+            });
+
+            if (resp.ok) {
+                var json = await resp.json();
+                if (json && json.playabilityStatus && json.playabilityStatus.status === 'OK' && json.streamingData) {
+                    return json;
+                }
+            }
+        } catch (e) {
+            console.error('[VidGrab] In-page VISIONOS fetch error:', e);
+        }
+        return null;
+    }
+
+    window.__vidgrabReadResponse = readPlayerResponseFromPage;
+    window.__vidgrabFetchDirectPlayerJson = async function(wantedVid) {
+        var vis = await fetchVisionOsResponse(wantedVid);
+        if (vis && vis.streamingData) {
+            window.__vidgrabLatestPlayerResponse = vis;
+            return vis;
+        }
+        var pageRes = readPlayerResponseFromPage(wantedVid);
+        if (pageRes && pageRes.streamingData) {
+            window.__vidgrabLatestPlayerResponse = pageRes;
+            return pageRes;
+        }
+        return null;
+    };
+
+    var lastSentResponseVideoId = '';
+    function checkInitialPlayerResponse() {
+        try {
+            var curVid = getCurrentVideoId();
+            if (!curVid || curVid === lastSentResponseVideoId) return;
+
+            var res = readPlayerResponseFromPage(curVid);
+            if (res && res.videoDetails && res.videoDetails.videoId) {
+                window.__vidgrabLatestPlayerResponse = res;
+                lastSentResponseVideoId = res.videoDetails.videoId;
+                if (window.VidGrabBridge && window.VidGrabBridge.onPlayerResponse) {
+                    window.VidGrabBridge.onPlayerResponse(res.videoDetails.videoId, JSON.stringify(res));
+                }
+            }
+            if (curVid && (!res || !res.streamingData)) {
+                fetchVisionOsResponse(curVid).then(function(vis) {
+                    if (vis && vis.streamingData && vis.videoDetails && vis.videoDetails.videoId) {
+                        window.__vidgrabLatestPlayerResponse = vis;
+                        lastSentResponseVideoId = vis.videoDetails.videoId;
+                        if (window.VidGrabBridge && window.VidGrabBridge.onPlayerResponse) {
+                            window.VidGrabBridge.onPlayerResponse(vis.videoDetails.videoId, JSON.stringify(vis));
+                        }
+                    }
+                }).catch(function(){});
             }
         } catch (e) {}
     }
+    checkInitialPlayerResponse();
 
     var originalFetch = window.fetch;
     window.fetch = function(input, init) {
@@ -312,14 +474,6 @@ object YouTubeJsScripts {
         return originalSend.apply(this, arguments);
     };
 
-    function notifyUrlChange() {
-        try {
-            if (window.VidGrabBridge && window.VidGrabBridge.onUrlChanged) {
-                window.VidGrabBridge.onUrlChanged(window.location.href, document.title);
-            }
-        } catch (e) {}
-    }
-
     try {
         var origPushState = history.pushState;
         history.pushState = function() {
@@ -335,25 +489,11 @@ object YouTubeJsScripts {
         };
     } catch (e) {}
 
-    window.addEventListener('popstate', notifyUrlChange);
-    window.addEventListener('yt-navigate-finish', function() {
-        notifyUrlChange();
-        setTimeout(checkInitialPlayerResponse, 200);
-        setTimeout(window.__vidgrabScanNodes, 300);
-        setTimeout(attachToAllVideos, 500);
-    });
-    window.addEventListener('load', function() {
-        notifyUrlChange();
-        checkInitialPlayerResponse();
-        setTimeout(window.__vidgrabScanNodes, 300);
-        setTimeout(attachToAllVideos, 500);
-    });
-
     // =========================================================================
-    // SECTION 2: Compact Icon-Only Shadow DOM Button Injection Layer
+    // SECTION 2: Single Dedicated Download Button Injection Layer
     // =========================================================================
 
-    var TARGET_SELECTORS = [
+    var CARD_CONTAINER_SELECTORS = [
         'ytm-rich-item-renderer',
         'ytm-video-with-context-renderer',
         'ytm-compact-video-renderer',
@@ -363,26 +503,176 @@ object YouTubeJsScripts {
         'ytm-playlist-panel-video-renderer',
         'ytm-reel-item-renderer',
         'ytm-shorts-lockup-view-model',
-        'ytm-media-item',
         'ytm-radio-renderer',
         'ytm-slim-video-metadata-section-renderer',
         'ytm-playlist-header-renderer',
         'ytm-c4-tabbed-header-renderer',
-        'yt-page-header-view-model',
-        'yt-lockup-view-model',
-        'ytm-lockup-view-model',
         'ytd-rich-item-renderer',
         'ytd-video-renderer',
-        '[class*="lockup-view-model"]'
+        'ytd-compact-video-renderer',
+        'ytd-playlist-video-renderer'
     ].join(',');
 
-    function createShadowButton(targetNode) {
-        if (targetNode.querySelector('[data-vidgrab-host]')) return;
-        targetNode.setAttribute('data-vidgrab-processed', 'true');
+    function getTopCard(node) {
+        if (!node || !node.closest) return null;
+        var top = node.closest('ytm-rich-item-renderer, ytd-rich-item-renderer');
+        if (top) return top;
+        top = node.closest('ytm-video-with-context-renderer, ytd-video-renderer');
+        if (top) return top;
+        top = node.closest('ytm-compact-video-renderer, ytm-compact-playlist-renderer, ytd-compact-video-renderer');
+        if (top) return top;
+        top = node.closest('ytm-playlist-video-renderer, ytm-playlist-panel-video-renderer, ytd-playlist-video-renderer');
+        if (top) return top;
+        top = node.closest('ytm-reel-item-renderer, ytm-shorts-lockup-view-model');
+        if (top) return top;
+        top = node.closest('ytm-slim-video-metadata-section-renderer, ytm-playlist-header-renderer, ytm-c4-tabbed-header-renderer');
+        if (top) return top;
+        top = node.closest('ytm-radio-renderer, ytm-compact-channel-renderer');
+        if (top) return top;
+        return node.closest(CARD_CONTAINER_SELECTORS);
+    }
+
+    function getPlaylistVideosFromPage() {
+        var items = [];
+        var seenIds = {};
+
+        // Priority 1: Parse window.ytInitialData
+        try {
+            function findPlaylistVideos(obj) {
+                if (!obj || typeof obj !== 'object') return;
+                if (obj.playlistVideoRenderer) {
+                    var vr = obj.playlistVideoRenderer;
+                    var vid = vr.videoId;
+                    if (vid && !seenIds[vid]) {
+                        seenIds[vid] = true;
+                        var title = (vr.title && vr.title.runs && vr.title.runs[0]) ? vr.title.runs[0].text : (vr.title ? (vr.title.simpleText || '') : '');
+                        var author = (vr.shortBylineText && vr.shortBylineText.runs && vr.shortBylineText.runs[0]) ? vr.shortBylineText.runs[0].text : '';
+                        var durSec = parseInt(vr.lengthSeconds, 10) || 0;
+                        var thumb = (vr.thumbnail && vr.thumbnail.thumbnails && vr.thumbnail.thumbnails[0]) ? vr.thumbnail.thumbnails[vr.thumbnail.thumbnails.length - 1].url : ('https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg');
+                        items.push({
+                            videoId: vid,
+                            url: 'https://www.youtube.com/watch?v=' + vid,
+                            title: title || ('Video #' + (items.length + 1)),
+                            author: author || 'YouTube',
+                            durationSeconds: durSec,
+                            thumbnailUrl: thumb,
+                            isSelected: true
+                        });
+                    }
+                    return;
+                }
+                for (var key in obj) {
+                    if (obj.hasOwnProperty(key)) {
+                        findPlaylistVideos(obj[key]);
+                    }
+                }
+            }
+            if (window.ytInitialData) {
+                findPlaylistVideos(window.ytInitialData);
+            }
+        } catch(e) {}
+
+        // Priority 2: DOM row scraping fallback
+        if (items.length === 0) {
+            try {
+                var rows = document.querySelectorAll('ytm-playlist-video-renderer, ytm-compact-video-renderer, [class*="playlist-video"]');
+                for (var i = 0; i < rows.length; i++) {
+                    var row = rows[i];
+                    var a = row.querySelector('a[href*="/watch"]');
+                    if (!a) continue;
+                    var vm = a.href.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+                    var vid = vm ? vm[1] : null;
+                    if (!vid || seenIds[vid]) continue;
+                    seenIds[vid] = true;
+
+                    var titleEl = row.querySelector('.media-item-headline, .compact-media-item-headline, h3, h4, [class*="headline"], [class*="title"]');
+                    var title = titleEl ? titleEl.innerText.trim() : ('Video #' + (items.length + 1));
+
+                    var bylineEl = row.querySelector('.media-item-byline, [class*="byline"], [class*="uploader"]');
+                    var author = bylineEl ? bylineEl.innerText.trim() : 'YouTube';
+
+                    var badgeEl = row.querySelector('[class*="duration"], [class*="time-status"], .badge-shape-wiz__text');
+                    var durSec = 0;
+                    if (badgeEl && badgeEl.innerText) {
+                        var parts = badgeEl.innerText.trim().split(':').map(function(p){ return parseInt(p, 10) || 0; });
+                        if (parts.length === 2) durSec = (parts[0] * 60) + parts[1];
+                        else if (parts.length === 3) durSec = (parts[0] * 3600) + (parts[1] * 60) + parts[2];
+                    }
+
+                    var img = row.querySelector('img');
+                    var thumb = img && img.src ? img.src : ('https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg');
+
+                    items.push({
+                        videoId: vid,
+                        url: 'https://www.youtube.com/watch?v=' + vid,
+                        title: title,
+                        author: author,
+                        durationSeconds: durSec,
+                        thumbnailUrl: thumb,
+                        isSelected: true
+                    });
+                }
+            } catch(e) {}
+        }
+
+        return items;
+    }
+    window.__vidgrabGetPlaylistVideos = getPlaylistVideosFromPage;
+
+    function createShadowButton(cardNode) {
+        var topCard = getTopCard(cardNode);
+        if (!topCard) return;
+
+        // Clean up any extra duplicate buttons that might exist in this card
+        var existingHosts = topCard.querySelectorAll('[data-vidgrab-host]');
+        if (existingHosts.length > 1) {
+            for (var k = 1; k < existingHosts.length; k++) {
+                try { existingHosts[k].remove(); } catch(e){}
+            }
+        }
+        // If the card already has exactly 1 button, do not inject another
+        if (existingHosts.length >= 1 || topCard.hasAttribute('data-vidgrab-has-btn')) {
+            topCard.setAttribute('data-vidgrab-has-btn', 'true');
+            return;
+        }
+
+        // Tag card as processed immediately to prevent concurrent duplicate injections
+        topCard.setAttribute('data-vidgrab-has-btn', 'true');
+
+        // Target placement:
+        // Priority 1: Directly before the 3-dots action menu container (cleanest native placement)
+        var menuBtn = topCard.querySelector('ytm-menu-renderer, .media-item-menu, button.item-action, button[aria-label*="Action" i], button[aria-label*="menu" i]');
+        var menuContainer = menuBtn ? (menuBtn.closest('ytm-menu-renderer, .media-item-menu') || menuBtn) : null;
+
+        // Priority 2: In metadata/details row
+        var metaContainer = (!menuContainer) ? topCard.querySelector('.details, .media-item-metadata, .compact-media-item-metadata, .slim-video-information-title-and-actions, .playlist-header-content') : null;
+
+        // Priority 3: Beside headline/title
+        var titleEl = (!menuContainer && !metaContainer) ? topCard.querySelector('.media-item-headline, .compact-media-item-headline, h1, h2, h3, [class*="headline"]') : null;
+        var titleParent = (titleEl && titleEl.parentNode && titleEl.parentNode !== topCard) ? titleEl.parentNode : null;
+
+        var insertionTarget = null;
+        var insertBeforeNode = null;
+
+        if (menuContainer && menuContainer.parentNode) {
+            insertionTarget = menuContainer.parentNode;
+            insertBeforeNode = menuContainer;
+        } else if (metaContainer) {
+            insertionTarget = metaContainer;
+            insertBeforeNode = null;
+        } else if (titleParent) {
+            insertionTarget = titleParent;
+            insertBeforeNode = null;
+        }
+
+        // Strictly avoid appending to card root or thumbnail containers
+        if (!insertionTarget) {
+            return;
+        }
 
         var host = document.createElement('div');
         host.setAttribute('data-vidgrab-host', 'true');
-        host.style.cssText = 'position: relative; display: inline-flex; align-items: center; justify-content: center; z-index: 100; margin-left: 8px; flex-shrink: 0; align-self: center; margin-right: 4px;';
+        host.style.cssText = 'position: relative; display: inline-flex; align-items: center; justify-content: center; z-index: 100; margin-left: 6px; margin-right: 4px; flex-shrink: 0; align-self: center;';
 
         var shadow = host.attachShadow({ mode: 'open' });
 
@@ -426,7 +716,18 @@ object YouTubeJsScripts {
         var btn = document.createElement('button');
         btn.className = 'vg-icon-btn';
         btn.setAttribute('aria-label', 'Download');
-        btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+        var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        var p1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        p1.setAttribute('d', 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4');
+        var p2 = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        p2.setAttribute('points', '7 10 12 15 17 10');
+        var l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        l1.setAttribute('x1', '12'); l1.setAttribute('y1', '15'); l1.setAttribute('x2', '12'); l1.setAttribute('y2', '3');
+        svg.appendChild(p1);
+        svg.appendChild(p2);
+        svg.appendChild(l1);
+        btn.appendChild(svg);
 
         function handleDownloadTrigger(e) {
             e.stopPropagation();
@@ -440,44 +741,60 @@ object YouTubeJsScripts {
             } catch (err) {}
 
             var isWatchPage = window.location.pathname.indexOf('/watch') !== -1 || window.location.pathname.indexOf('/shorts/') !== -1;
-            var isMetadataSection = targetNode.matches('ytm-slim-video-metadata-section-renderer');
+            var isPlaylistPage = window.location.pathname.indexOf('/playlist') !== -1;
+            var isMetadataSection = topCard.matches('ytm-slim-video-metadata-section-renderer');
+            var isPlaylistHeader = topCard.matches('ytm-playlist-header-renderer');
+            var isPlaylistCard = topCard.matches('ytm-compact-playlist-renderer') ||
+                (topCard.querySelector('a[href*="list="]') && !topCard.querySelector('a[href*="/watch?v="]'));
+
+            // Check if this card represents a single video row inside a playlist page or feed
+            var videoAnchor = topCard.querySelector('a[href*="/watch"], a[href*="/shorts/"]');
+            var isIndividualVideo = videoAnchor && !isPlaylistHeader && !isPlaylistCard;
 
             var rawUrl = window.location.href;
             var itemType = 'VIDEO';
+            var playlistItems = null;
 
             if (isMetadataSection && isWatchPage) {
                 rawUrl = window.location.href;
                 itemType = 'VIDEO';
-            } else if (targetNode.matches('ytm-playlist-header-renderer') || window.location.pathname.indexOf('/playlist') !== -1) {
-                var plAnchor = targetNode.querySelector('a[href*="/playlist"]');
-                rawUrl = plAnchor ? plAnchor.href : window.location.href;
+            } else if (isPlaylistHeader || (isPlaylistPage && !isIndividualVideo) || isPlaylistCard) {
+                // Entire Playlist Download
+                var plAnchor = topCard.querySelector('a[href*="list="], a[href*="/playlist"]');
+                var candidatePlUrl = plAnchor ? plAnchor.href : window.location.href;
+                var plMatch = candidatePlUrl.match(/[?&]list=([a-zA-Z0-9_-]+)/);
+                var playlistId = plMatch ? plMatch[1] : '';
+                rawUrl = playlistId ? ('https://www.youtube.com/playlist?list=' + playlistId) : candidatePlUrl;
                 itemType = 'PLAYLIST';
-            } else if (targetNode.matches('ytm-c4-tabbed-header-renderer, yt-page-header-view-model') || (!isWatchPage && (window.location.pathname.indexOf('/@') !== -1 || window.location.pathname.indexOf('/channel/') !== -1))) {
-                var chAnchor = targetNode.querySelector('a[href*="/@"], a[href*="/channel/"]');
+                if (isPlaylistPage || isPlaylistHeader) {
+                    playlistItems = getPlaylistVideosFromPage();
+                }
+            } else if (topCard.matches('ytm-c4-tabbed-header-renderer, yt-page-header-view-model') || (!isWatchPage && (window.location.pathname.indexOf('/@') !== -1 || window.location.pathname.indexOf('/channel/') !== -1))) {
+                var chAnchor = topCard.querySelector('a[href*="/@"], a[href*="/channel/"]');
                 rawUrl = chAnchor ? chAnchor.href : window.location.href;
                 itemType = 'CHANNEL';
+            } else if (videoAnchor) {
+                rawUrl = videoAnchor.href;
+                itemType = 'VIDEO';
             } else {
-                var videoAnchor = targetNode.querySelector('a[href*="/watch"], a[href*="/shorts/"]');
-                if (videoAnchor) {
-                    rawUrl = videoAnchor.href;
-                    itemType = 'VIDEO';
-                } else {
-                    rawUrl = window.location.href;
-                    itemType = isWatchPage ? 'VIDEO' : 'PAGE';
+                rawUrl = window.location.href;
+                itemType = isWatchPage ? 'VIDEO' : (isPlaylistPage ? 'PLAYLIST' : 'PAGE');
+                if (itemType === 'PLAYLIST') {
+                    playlistItems = getPlaylistVideosFromPage();
                 }
             }
 
-            var titleEl = targetNode.querySelector('.media-item-headline, .compact-media-item-headline, h1, h2, h3, h4, .slim-video-information-title, [class*="lockup-title"], [class*="video-title"], [class*="headline"], [class*="title"]');
+            var titleEl = topCard.querySelector('.media-item-headline, .compact-media-item-headline, h1, h2, h3, h4, .slim-video-information-title, [class*="lockup-title"], [class*="video-title"], [class*="headline"], [class*="title"]');
             var title = titleEl ? titleEl.innerText.trim() : document.title;
 
             var vidMatch = rawUrl.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-            var targetVid = vidMatch ? vidMatch[1] : null;
+            var targetVid = (itemType === 'PLAYLIST') ? null : (vidMatch ? vidMatch[1] : null);
 
             var durationSec = 0;
             try {
-                // 1. Check meta tag itemprop="duration" (Standard ISO 8601 duration on YouTube watch pages, e.g. PT3M45S)
+                // 1. Check meta tag itemprop="duration"
                 var metaDur = document.querySelector('meta[itemprop="duration"]');
-                if (metaDur && metaDur.content) {
+                if (metaDur && metaDur.content && isWatchPage) {
                     var m = metaDur.content.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
                     if (m) {
                         var h = parseInt(m[1], 10) || 0;
@@ -502,9 +819,9 @@ object YouTubeJsScripts {
                     }
                 }
 
-                // 4. Check duration badges or time status overlays in targetNode
-                if (durationSec <= 0 && targetNode) {
-                    var badgeEl = targetNode.querySelector('.badge-shape-wiz__text, ytd-thumbnail-overlay-time-status-renderer, [class*="time-status"], [class*="duration"], .media-item-duration, ytm-thumbnail-overlay-time-status-renderer, span[role="text"]');
+                // 4. Check duration badges or time status overlays in topCard
+                if (durationSec <= 0 && topCard) {
+                    var badgeEl = topCard.querySelector('.badge-shape-wiz__text, ytd-thumbnail-overlay-time-status-renderer, [class*="time-status"], [class*="duration"], .media-item-duration, ytm-thumbnail-overlay-time-status-renderer, span[role="text"]');
                     if (badgeEl && badgeEl.innerText) {
                         var parts = badgeEl.innerText.trim().split(':').map(function(p) { return parseInt(p, 10) || 0; });
                         if (parts.length === 2) {
@@ -517,27 +834,48 @@ object YouTubeJsScripts {
             } catch (err) {}
 
             var cleanUrl = rawUrl;
-            if (targetVid && (rawUrl.indexOf('/watch') !== -1 || rawUrl.indexOf('/shorts/') !== -1 || rawUrl.indexOf('youtu.be/') !== -1)) {
+            if (itemType === 'PLAYLIST') {
+                var plm = rawUrl.match(/[?&]list=([a-zA-Z0-9_-]+)/);
+                if (plm) cleanUrl = 'https://www.youtube.com/playlist?list=' + plm[1];
+            } else if (targetVid && (rawUrl.indexOf('/watch') !== -1 || rawUrl.indexOf('/shorts/') !== -1 || rawUrl.indexOf('youtu.be/') !== -1)) {
                 cleanUrl = 'https://www.youtube.com/watch?v=' + targetVid;
             }
 
             var inlinePlayerJson = '';
             var candidate = null;
             if (targetVid) {
-                if (window.__vidgrabLatestPlayerResponse && window.__vidgrabLatestPlayerResponse.videoDetails && window.__vidgrabLatestPlayerResponse.videoDetails.videoId === targetVid && window.__vidgrabLatestPlayerResponse.streamingData) {
-                    candidate = window.__vidgrabLatestPlayerResponse;
-                } else if (window.ytInitialPlayerResponse && window.ytInitialPlayerResponse.videoDetails && window.ytInitialPlayerResponse.videoDetails.videoId === targetVid && window.ytInitialPlayerResponse.streamingData) {
-                    candidate = window.ytInitialPlayerResponse;
-                }
+                candidate = readPlayerResponseFromPage(targetVid);
+            }
+            if (!candidate && !targetVid) {
+                candidate = readPlayerResponseFromPage();
             }
             if (candidate) {
                 try {
                     inlinePlayerJson = JSON.stringify(candidate);
+                    var effectiveVid = candidate.videoDetails && candidate.videoDetails.videoId ? candidate.videoDetails.videoId : targetVid;
+                    if (effectiveVid && window.VidGrabBridge && window.VidGrabBridge.onPlayerResponse) {
+                        window.VidGrabBridge.onPlayerResponse(effectiveVid, inlinePlayerJson);
+                    }
                 } catch (err) {}
             }
 
-            if (window.VidGrabBridge && window.VidGrabBridge.onDownloadClicked) {
-                window.VidGrabBridge.onDownloadClicked(cleanUrl, itemType, title, inlinePlayerJson, durationSec);
+            var playlistItemsJson = (itemType === 'PLAYLIST' && playlistItems && playlistItems.length > 0) ? JSON.stringify(playlistItems) : '';
+
+            function sendTrigger(jsonStr) {
+                if (window.VidGrabBridge && window.VidGrabBridge.onDownloadClicked) {
+                    window.VidGrabBridge.onDownloadClicked(cleanUrl, itemType, title, jsonStr || '', durationSec, playlistItemsJson);
+                }
+            }
+
+            if (itemType !== 'PLAYLIST' && targetVid && window.__vidgrabFetchDirectPlayerJson) {
+                window.__vidgrabFetchDirectPlayerJson(targetVid).then(function(res) {
+                    var finalJson = res ? JSON.stringify(res) : inlinePlayerJson;
+                    sendTrigger(finalJson);
+                }).catch(function() {
+                    sendTrigger(inlinePlayerJson);
+                });
+            } else {
+                sendTrigger(inlinePlayerJson);
             }
         }
 
@@ -547,59 +885,44 @@ object YouTubeJsScripts {
         shadow.appendChild(style);
         shadow.appendChild(btn);
 
-        // Prioritize placing directly before the 3-dots action menu container
-        var menuBtn = targetNode.querySelector('ytm-menu-renderer, button.item-action, .media-item-menu, button[aria-label*="Action" i], button[aria-label*="menu" i], yt-icon-button');
-        var menuContainer = menuBtn ? (menuBtn.closest('ytm-menu-renderer, .media-item-menu, .menu') || menuBtn) : null;
-        if (menuContainer && menuContainer.parentNode) {
-            menuContainer.parentNode.insertBefore(host, menuContainer);
-            return;
-        }
-
-        // Anchor directly beside the title element in the title container
-        var titleEl = targetNode.querySelector('.media-item-headline, .compact-media-item-headline, h1, h2, h3, h4, .slim-video-information-title, [class*="lockup-title"], [class*="video-title"], [class*="headline"], [class*="title"]');
-        if (titleEl && titleEl.parentNode) {
-            var parent = titleEl.parentNode;
-            try {
-                if (window.getComputedStyle(parent).display.indexOf('flex') === -1) {
-                    parent.style.display = 'flex';
-                    parent.style.flexDirection = 'row';
-                    parent.style.alignItems = 'center';
-                    parent.style.justifyContent = 'space-between';
-                }
-                titleEl.style.flex = '1';
-                titleEl.style.minWidth = '0';
-            } catch (err) {}
-            parent.appendChild(host);
-            return;
-        }
-
-        var insertionTarget = targetNode.querySelector('.details, .media-item-metadata, .compact-media-item-metadata, ytm-media-item-metadata-renderer, .slim-video-metadata-actions, .playlist-header-content, .c4-tabbed-header-sub-menu');
-        if (insertionTarget) {
-            try {
-                if (window.getComputedStyle(insertionTarget).display !== 'flex') {
-                    insertionTarget.style.display = 'flex';
-                    insertionTarget.style.alignItems = 'center';
-                }
-            } catch (err) {}
-            insertionTarget.appendChild(host);
+        if (insertBeforeNode) {
+            insertionTarget.insertBefore(host, insertBeforeNode);
         } else {
-            targetNode.appendChild(host);
+            insertionTarget.appendChild(host);
         }
     }
 
     window.__vidgrabScanNodes = function() {
-        var elements = document.querySelectorAll(TARGET_SELECTORS);
-        for (var i = 0; i < elements.length; i++) {
-            createShadowButton(elements[i]);
-        }
-        var videoAnchors = document.querySelectorAll('a[href*="/watch?v="], a[href*="/shorts/"]');
-        for (var j = 0; j < videoAnchors.length; j++) {
-            var card = videoAnchors[j].closest('ytm-video-with-context-renderer, ytm-compact-video-renderer, ytm-media-item, [class*="renderer"], [class*="lockup"], [class*="media-item"]');
-            if (card) {
-                createShadowButton(card);
+        // 1. Purge any accidental stray buttons placed inside thumbnails or avatar elements
+        try {
+            var strayButtons = document.querySelectorAll(
+                '.media-item-thumbnail-container [data-vidgrab-host], ' +
+                'ytm-thumbnail-overlay-time-status-renderer [data-vidgrab-host], ' +
+                '[class*="thumbnail"] [data-vidgrab-host], ' +
+                'ytm-channel-thumbnail-with-link-renderer [data-vidgrab-host]'
+            );
+            for (var s = 0; s < strayButtons.length; s++) {
+                strayButtons[s].remove();
+            }
+        } catch(e) {}
+
+        // 2. Scan canonical card containers
+        var cards = document.querySelectorAll(CARD_CONTAINER_SELECTORS);
+        for (var i = 0; i < cards.length; i++) {
+            var top = getTopCard(cards[i]);
+            if (top) {
+                createShadowButton(top);
             }
         }
-        attachToAllVideos();
+
+        // 3. Fallback scan on video and playlist anchors to ensure no cards are missed
+        var anchors = document.querySelectorAll('a[href*="/watch?v="], a[href*="/shorts/"], a[href*="list="]');
+        for (var j = 0; j < anchors.length; j++) {
+            var topAnchor = getTopCard(anchors[j]);
+            if (topAnchor) {
+                createShadowButton(topAnchor);
+            }
+        }
     };
 
     // =========================================================================
@@ -610,7 +933,7 @@ object YouTubeJsScripts {
         if (scanTimeout) return;
         scanTimeout = setTimeout(function() {
             scanTimeout = null;
-            window.__vidgrabScanNodes();
+            if (window.__vidgrabScanNodes) window.__vidgrabScanNodes();
         }, 120);
     }
 
@@ -627,17 +950,56 @@ object YouTubeJsScripts {
         }
     });
 
-    observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true
-    });
+    function initObserver() {
+        var target = document.documentElement || document.body;
+        if (target) {
+            observer.observe(target, {
+                childList: true,
+                subtree: true
+            });
+        } else {
+            document.addEventListener('DOMContentLoaded', function() {
+                var delayedTarget = document.documentElement || document.body;
+                if (delayedTarget) {
+                    observer.observe(delayedTarget, {
+                        childList: true,
+                        subtree: true
+                    });
+                }
+            });
+        }
+    }
+    initObserver();
+
+    function notifyUrlChange() {
+        lastSentResponseVideoId = '';
+        if (window.VidGrabBridge && window.VidGrabBridge.onUrlChanged) {
+            window.VidGrabBridge.onUrlChanged(window.location.href, document.title);
+        }
+        checkInitialPlayerResponse();
+        var curVid = getCurrentVideoId();
+        if (curVid && window.__vidgrabFetchDirectPlayerJson) {
+            window.__vidgrabFetchDirectPlayerJson(curVid).then(function(res) {
+                if (res && window.VidGrabBridge && window.VidGrabBridge.onPlayerResponse) {
+                    window.VidGrabBridge.onPlayerResponse(curVid, JSON.stringify(res));
+                }
+            }).catch(function(){});
+        }
+        scheduleScan();
+    }
+
+    window.addEventListener('yt-navigate-finish', notifyUrlChange);
+    window.addEventListener('popstate', notifyUrlChange);
+    window.addEventListener('load', notifyUrlChange);
 
     window.addEventListener('scroll', scheduleScan, { passive: true });
     setInterval(function() {
+        checkInitialPlayerResponse();
         if (window.__vidgrabScanNodes) window.__vidgrabScanNodes();
-    }, 700);
+    }, 1000);
 
     window.__vidgrabScanNodes();
+    checkInitialPlayerResponse();
 })();
     """.trimIndent()
 }

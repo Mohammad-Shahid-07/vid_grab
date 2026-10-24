@@ -47,18 +47,24 @@ object InnerTubeFastClient {
         val supportsWebCookies: Boolean = false
     )
 
+    val httpClient: okhttp3.OkHttpClient get() = fastHttpClient
+
+    const val VISIONOS_USER_AGENT =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+
     private val clientStrategies = listOf(
-        // 1. ANDROID (Native mobile stream: direct, unthrottled, un-ciphered URLs)
+        // 1. VISIONOS (1DM Verified Contract: supplies direct, unthrottled adaptive URLs via HTML5_PREF_WANTS)
         InnerTubeClientConfig(
-            name = "ANDROID",
-            clientName = "ANDROID",
-            clientVersion = "19.44.38",
-            userAgent = "com.google.android.youtube/19.44.38 (Linux; U; Android 15) gzip",
-            clientNumberHeader = "3",
-            androidSdkVersion = 35,
-            osName = "Android",
-            osVersion = "15",
-            supportsWebCookies = false
+            name = "VISIONOS",
+            clientName = "VISIONOS",
+            clientVersion = "1.02",
+            userAgent = VISIONOS_USER_AGENT,
+            clientNumberHeader = "101",
+            deviceMake = "Apple",
+            deviceModel = "RealityDevice17,1",
+            osName = "visionOS",
+            osVersion = "26.5.23O471",
+            supportsWebCookies = true
         ),
         // 2. IOS (Clean raw MP4/AAC streams)
         InnerTubeClientConfig(
@@ -73,14 +79,31 @@ object InnerTubeFastClient {
             osVersion = "18.1.0.22B83",
             supportsWebCookies = false
         ),
-        // 3. VISIONOS (Clean web fallback)
+        // 3. ANDROID (Native mobile stream fallback)
         InnerTubeClientConfig(
-            name = "VISIONOS",
-            clientName = "VISIONOS",
-            clientVersion = "0.1",
-            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
-            clientNumberHeader = "101",
-            supportsWebCookies = true
+            name = "ANDROID",
+            clientName = "ANDROID",
+            clientVersion = "19.44.38",
+            userAgent = "com.google.android.youtube/19.44.38 (Linux; U; Android 15) gzip",
+            clientNumberHeader = "3",
+            androidSdkVersion = 35,
+            osName = "Android",
+            osVersion = "15",
+            supportsWebCookies = false
+        ),
+        // 4. ANDROID_VR (Oculus Quest 3)
+        InnerTubeClientConfig(
+            name = "ANDROID_VR",
+            clientName = "ANDROID_VR",
+            clientVersion = "1.60.19",
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 14; en_US; Quest 3; Build/UP1A.231005.007.A1; Cronet/132.0.6808.3)",
+            clientNumberHeader = "28",
+            deviceMake = "Meta",
+            deviceModel = "Quest 3",
+            osName = "Android",
+            osVersion = "14",
+            androidSdkVersion = 34,
+            supportsWebCookies = false
         )
     )
 
@@ -104,6 +127,10 @@ object InnerTubeFastClient {
                     .header("Content-Type", "application/json")
                     .header("X-YouTube-Client-Name", config.clientNumberHeader)
                     .header("X-YouTube-Client-Version", config.clientVersion)
+
+                if (!visitorData.isNullOrBlank()) {
+                    requestBuilder.header("X-Goog-Visitor-Id", visitorData)
+                }
 
                 // CRITICAL: NEVER attach MWEB browser cookies to ANDROID or IOS mobile clients
                 if (config.supportsWebCookies && !webCookies.isNullOrBlank()) {
@@ -206,8 +233,15 @@ object InnerTubeFastClient {
             put("client", clientObj)
         }
 
+        val playbackContextObj = JSONObject().apply {
+            put("contentPlaybackContext", JSONObject().apply {
+                put("html5Preference", "HTML5_PREF_WANTS")
+            })
+        }
+
         val root = JSONObject().apply {
             put("context", contextObj)
+            put("playbackContext", playbackContextObj)
             put("videoId", videoId)
             put("contentCheckOk", true)
             put("racyCheckOk", true)
@@ -222,5 +256,92 @@ object InnerTubeFastClient {
         }
 
         return root
+    }
+
+    /**
+     * Fast InnerTube browse API client for YouTube playlists (<250ms).
+     * Bypasses HTML scraping and bot blocks by querying /youtubei/v1/browse with browseId = "VL" + playlistId.
+     */
+    suspend fun fetchPlaylist(playlistId: String): List<BatchPlaylistItem> = withContext(Dispatchers.IO) {
+        val cleanPid = playlistId.removePrefix("VL")
+        val browseId = "VL$cleanPid"
+        val payload = JSONObject().apply {
+            put("context", JSONObject().apply {
+                put("client", JSONObject().apply {
+                    put("clientName", "WEB")
+                    put("clientVersion", "2.20241018.01.00")
+                    put("hl", "en")
+                    put("gl", "US")
+                })
+            })
+            put("browseId", browseId)
+        }
+
+        val request = Request.Builder()
+            .url("https://www.youtube.com/youtubei/v1/browse?prettyPrint=false")
+            .header("User-Agent", VISIONOS_USER_AGENT)
+            .header("Referer", "https://www.youtube.com/playlist?list=$cleanPid")
+            .header("Origin", "https://www.youtube.com")
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        val results = mutableListOf<BatchPlaylistItem>()
+        try {
+            fastHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val bodyStr = response.body?.string() ?: return@withContext emptyList()
+                val root = JSONObject(bodyStr)
+                extractPlaylistVideosRecursively(root, results)
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "InnerTubeFastClient: fetchPlaylist failed for %s", playlistId)
+        }
+        results
+    }
+
+    private fun extractPlaylistVideosRecursively(
+        obj: Any,
+        results: MutableList<BatchPlaylistItem>,
+        seenIds: MutableSet<String> = mutableSetOf()
+    ) {
+        when (obj) {
+            is JSONObject -> {
+                if (obj.has("playlistVideoRenderer")) {
+                    val pvr = obj.optJSONObject("playlistVideoRenderer") ?: return
+                    val vid = pvr.optString("videoId")
+                    if (vid.isNotBlank() && seenIds.add(vid)) {
+                        val titleRuns = pvr.optJSONObject("title")?.optJSONArray("runs")
+                        val title = titleRuns?.optJSONObject(0)?.optString("text")
+                            ?: pvr.optJSONObject("title")?.optString("simpleText")
+                            ?: "Video #${results.size + 1}"
+                        val authorRuns = pvr.optJSONObject("shortBylineText")?.optJSONArray("runs")
+                        val author = authorRuns?.optJSONObject(0)?.optString("text") ?: "YouTube"
+                        val durSec = pvr.optString("lengthSeconds").toLongOrNull() ?: pvr.optLong("lengthSeconds", 0L)
+                        val thumb = "https://i.ytimg.com/vi/$vid/hqdefault.jpg"
+                        results.add(
+                            BatchPlaylistItem(
+                                url = "https://www.youtube.com/watch?v=$vid",
+                                title = title,
+                                author = author,
+                                durationSeconds = durSec,
+                                thumbnailUrl = thumb,
+                                isSelected = true
+                            )
+                        )
+                    }
+                    return
+                }
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    extractPlaylistVideosRecursively(obj.get(key), results, seenIds)
+                }
+            }
+            is org.json.JSONArray -> {
+                for (i in 0 until obj.length()) {
+                    extractPlaylistVideosRecursively(obj.get(i), results, seenIds)
+                }
+            }
+        }
     }
 }

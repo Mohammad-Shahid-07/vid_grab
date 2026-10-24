@@ -19,6 +19,7 @@ import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import android.webkit.ServiceWorkerClient
 import android.webkit.ServiceWorkerController
+import com.vidgrab.app.core.webview.WebViewSessionManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -213,14 +214,65 @@ fun YouTubeBrowserScreen(
             if (currentNavScreen == BrowserNavScreen.BROWSER && currentType != "PAGE") {
                 FloatingActionButton(
                     onClick = {
+                        val liveUrl = webViewInstance?.url ?: currentUrl
+                        val liveTitle = webViewInstance?.title ?: pageTitle
+                        val isPlaylist = liveUrl.contains("/playlist") || liveUrl.contains("list=")
+                        val targetVid = if (isPlaylist) null else com.vidgrab.app.core.extractor.DualEngineMetadataResolver.extractVideoId(liveUrl)
+
+                        // Pause video playback immediately
                         webViewInstance?.evaluateJavascript(
                             "document.querySelectorAll('video').forEach(function(v) { try { v.pause(); } catch(e){} });",
                             null
                         )
-                        val liveUrl = webViewInstance?.url ?: currentUrl
-                        val liveTitle = webViewInstance?.title ?: pageTitle
-                        val payload = browserViewModel.createFabDownloadPayload(overrideUrl = liveUrl, overrideTitle = liveTitle)
-                        qualityPickerViewModel.load(payload)
+
+                        // Fast-path for single videos: In-memory live cache (<5ms)
+                        if (!isPlaylist && targetVid != null && WebViewSessionManager.latestVideoId == targetVid && !WebViewSessionManager.latestPlayerResponseJson.isNullOrBlank()) {
+                            val cachedPayload = browserViewModel.createFabDownloadPayload(
+                                overrideUrl = liveUrl,
+                                overrideTitle = liveTitle,
+                                overrideInlineJson = WebViewSessionManager.latestPlayerResponseJson
+                            )
+                            qualityPickerViewModel.load(cachedPayload)
+                            return@FloatingActionButton
+                        }
+
+                        // Show initial shimmer while payload resolves (<200ms)
+                        val initialPayload = browserViewModel.createFabDownloadPayload(overrideUrl = liveUrl, overrideTitle = liveTitle)
+                        qualityPickerViewModel.load(initialPayload)
+
+                        val jsCode = """
+                            (function() {
+                                try {
+                                    var isPlaylist = window.location.pathname.indexOf('/playlist') !== -1 || window.location.href.indexOf('list=') !== -1;
+                                    var vid = isPlaylist ? null : '$targetVid';
+                                    var url = '$liveUrl';
+                                    var title = ${org.json.JSONObject.quote(liveTitle)};
+                                    var playlistItems = isPlaylist && (typeof window.__vidgrabGetPlaylistVideos === 'function') ? window.__vidgrabGetPlaylistVideos() : [];
+                                    var playlistJson = playlistItems.length > 0 ? JSON.stringify(playlistItems) : '';
+                                    
+                                    function deliver(finalJson) {
+                                        if (window.VidGrabBridge && window.VidGrabBridge.onFabPayloadReady) {
+                                            window.VidGrabBridge.onFabPayloadReady(url, title, vid, finalJson || '', playlistJson);
+                                        }
+                                    }
+
+                                    if (!isPlaylist && window.__vidgrabFetchDirectPlayerJson && vid) {
+                                        window.__vidgrabFetchDirectPlayerJson(vid).then(function(res) {
+                                            deliver(res ? JSON.stringify(res) : '');
+                                        }).catch(function() {
+                                            deliver('');
+                                        });
+                                    } else {
+                                        deliver('');
+                                    }
+                                } catch(e) {
+                                    if (window.VidGrabBridge && window.VidGrabBridge.onFabPayloadReady) {
+                                        window.VidGrabBridge.onFabPayloadReady('$liveUrl', ${org.json.JSONObject.quote(liveTitle)}, '$targetVid', '', '');
+                                    }
+                                }
+                            })();
+                        """.trimIndent()
+                        webViewInstance?.evaluateJavascript(jsCode, null)
                     },
                     containerColor = AppTheme.accent.color,
                     contentColor = AppTheme.accent.text,
@@ -323,7 +375,10 @@ fun YouTubeBrowserScreen(
                             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                                 super.doUpdateVisitedHistory(view, url, isReload)
                                 browserViewModel.onNavigationStateChanged(canGoBack(), canGoForward())
-                                url?.let { browserViewModel.onPageStarted(it) }
+                                url?.let {
+                                    browserViewModel.onPageStarted(it)
+                                    browserViewModel.onPageFinished(it, view?.title)
+                                }
                                 view?.evaluateJavascript(YouTubeJsScripts.INJECTION_SCRIPT, null)
                             }
 

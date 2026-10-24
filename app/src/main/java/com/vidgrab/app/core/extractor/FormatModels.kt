@@ -17,7 +17,8 @@ data class VideoQualityOption(
     val estimatedTotalBytes: Long = 0L,
     val formatSelector: String,
     val directStreamUrl: String? = null,
-    val matchedAudioStreamUrl: String? = null
+    val matchedAudioStreamUrl: String? = null,
+    val isMuxed: Boolean = false
 ) {
     val formattedSize: String
         get() = formatBytes(estimatedTotalBytes)
@@ -128,6 +129,9 @@ data class DownloadRequestSpec(
     val concurrentFragments: Int = 8,
     val resolvedVideoStreamUrl: String? = null,
     val resolvedAudioStreamUrl: String? = null,
+    val directVideoUrl: String? = resolvedVideoStreamUrl,
+    val directAudioUrl: String? = resolvedAudioStreamUrl,
+    val isDirectMuxed: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 )
 

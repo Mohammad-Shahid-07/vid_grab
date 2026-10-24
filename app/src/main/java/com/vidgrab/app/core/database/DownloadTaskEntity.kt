@@ -55,6 +55,9 @@ data class DownloadTaskEntity(
     val downloadFolder: String? = null,
     val resolvedVideoStreamUrl: String? = null,
     val resolvedAudioStreamUrl: String? = null,
+    val directVideoUrl: String? = null,
+    val directAudioUrl: String? = null,
+    val isDirectMuxed: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )
