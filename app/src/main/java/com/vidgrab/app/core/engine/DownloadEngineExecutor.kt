@@ -3,8 +3,11 @@ package com.vidgrab.app.core.engine
 import android.content.Context
 import com.vidgrab.app.core.database.DownloadTaskEntity
 import com.vidgrab.app.core.database.TaskStatus
+import com.vidgrab.app.core.extractor.AudioQualityOption
 import com.vidgrab.app.core.extractor.DualEngineMetadataResolver
+import com.vidgrab.app.core.extractor.FormatSelectorBuilder
 import com.vidgrab.app.core.extractor.InnerTubeFastClient
+import com.vidgrab.app.core.extractor.VideoQualityOption
 import com.vidgrab.app.core.extractor.formatBytes
 import com.vidgrab.app.core.network.NetworkConstants
 import com.vidgrab.app.core.storage.MediaStoreExporter
@@ -17,6 +20,7 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 
 data class ProgressUpdate(
     val progress: Float,
@@ -24,7 +28,11 @@ data class ProgressUpdate(
     val etaSeconds: Long,
     val status: TaskStatus,
     val downloadedBytes: Long = 0L,
-    val totalBytes: Long = 0L
+    val totalBytes: Long = 0L,
+    val videoBytes: Long = 0L,
+    val audioBytes: Long = 0L,
+    val activeConnections: Int = 8,
+    val segmentProgressCsv: String = ""
 )
 
 /**
@@ -68,7 +76,7 @@ object DownloadEngineExecutor {
 
         try {
             val startP = task.progressPercent.coerceAtLeast(0f)
-            onProgress(ProgressUpdate(startP, if (startP > 0f) "Resuming..." else "Connecting...", -1L, TaskStatus.DOWNLOADING))
+            onProgress(ProgressUpdate(startP, if (startP > 0f) "Resuming..." else "Connecting...", -1L, TaskStatus.DOWNLOADING, activeConnections = 0))
 
             val targetHeight = task.targetHeight ?: 1080
             val qjsFile = File(context.applicationInfo.nativeLibraryDir, "libqjs.so")
@@ -76,20 +84,33 @@ object DownloadEngineExecutor {
             val cleanUrl = DualEngineMetadataResolver.sanitizeMediaUrl(task.url)
             val isYouTube = cleanUrl.contains("youtube.com") || cleanUrl.contains("youtu.be")
 
+            // Audio-only formats such as MP3/FLAC require a real transcode, which only yt-dlp
+            // can perform. Never let a native engine substitute a raw M4A/Opus stream for them.
+            val outputExtLower = task.outputExt.lowercase()
+            val nativeAudioCompatible = !task.isAudioOnly ||
+                outputExtLower in setOf("m4a", "aac", "opus", "webm")
+
+            // FastDirect muxes with Android's MediaMuxer, which only produces MP4 (AVC/AAC).
+            // VP9/WebM merges and MKV fallbacks must go through FFmpeg (DirectJvm) or yt-dlp.
+            val fastDirectSupportsContainer = task.isAudioOnly ||
+                (outputExtLower != "webm" && outputExtLower != "mkv" &&
+                    !task.videoCodecPreference.equals("VP9", ignoreCase = true))
+
             // =================================================================
-            // STAGE 0: Instant Native Direct Stream Downloader (<1s connect time)
+            // STAGE 0: Native direct engines — selected engine first, then fallback
             // =================================================================
             var directVideo = task.directVideoUrl ?: task.resolvedVideoStreamUrl
-            var directAudio = task.directAudioUrl ?: task.resolvedAudioStreamUrl
+            var directAudio = if (task.isDirectMuxed) null else (task.directAudioUrl ?: task.resolvedAudioStreamUrl)
 
             val isVideoNeeded = !task.isAudioOnly
             val isAudioNeeded = task.isAudioOnly || (!task.isDirectMuxed && directVideo != null)
 
             val isVideoValid = !isVideoNeeded || FastDirectDownloader.isStreamUrlValid(directVideo)
             val isAudioValid = !isAudioNeeded || FastDirectDownloader.isStreamUrlValid(directAudio)
-            val needsReResolution = isYouTube && (!isVideoValid || !isAudioValid)
+            val needsReResolution = isYouTube && nativeAudioCompatible && (!isVideoValid || !isAudioValid)
 
-            // If direct URLs are missing or expired, re-resolve via DualEngineMetadataResolver
+            // If direct URLs are missing or expired, re-resolve while honoring the user's
+            // video codec and exact audio-track choices.
             if (needsReResolution) {
                 val vid = DualEngineMetadataResolver.extractVideoId(cleanUrl)
                 if (vid != null) {
@@ -101,61 +122,138 @@ object DownloadEngineExecutor {
                             inlinePlayerJson = null
                         )
                         val resolved = DualEngineMetadataResolver.resolve(payload)
-                        val matchedVideo = resolved.videoOptions.firstOrNull { it.height == targetHeight }
-                            ?: resolved.videoOptions.firstOrNull { it.height <= targetHeight }
-                            ?: resolved.videoOptions.firstOrNull()
-
-                        val matchedAudio = if (task.isAudioOnly) {
-                            resolved.audioOptions.firstOrNull { it.extension.equals(task.outputExt, ignoreCase = true) }
-                                ?: resolved.audioOptions.firstOrNull()
-                        } else {
-                            matchedVideo?.matchedAudioStreamUrl?.let { aUrl ->
-                                resolved.audioOptions.firstOrNull { it.directStreamUrl == aUrl }
-                            } ?: resolved.audioOptions.maxByOrNull { it.bitrateKbps }
-                        }
+                        val matchedVideo = selectReResolvedVideo(
+                            resolved.videoOptions,
+                            targetHeight,
+                            task.videoCodecPreference
+                        )
+                        val matchedAudio = selectReResolvedAudio(resolved.audioOptions, task, matchedVideo)
 
                         directVideo = matchedVideo?.directStreamUrl
-                        directAudio = if (matchedVideo?.isMuxed == true) null else (matchedAudio?.directStreamUrl ?: matchedVideo?.matchedAudioStreamUrl)
-                        Timber.i("DownloadEngine: Re-resolved direct streams for %s (video=%b, audio=%b)", vid, directVideo != null, directAudio != null)
+                        directAudio = if (matchedVideo?.isMuxed == true) null
+                            else (matchedAudio?.directStreamUrl ?: matchedVideo?.matchedAudioStreamUrl)
+                        Timber.i(
+                            "DownloadEngine: Re-resolved direct streams for %s (video=%b %s, audio=%b %s)",
+                            vid,
+                            directVideo != null,
+                            matchedVideo?.vcodec,
+                            directAudio != null,
+                            matchedAudio?.audioTrackName ?: matchedAudio?.extension
+                        )
                     } catch (e: Exception) {
                         Timber.w(e, "DownloadEngine: Direct stream re-resolution failed for %s", vid)
                     }
                 }
             }
 
-            if (!directVideo.isNullOrBlank() || !directAudio.isNullOrBlank()) {
-                val sanitizedTitle = task.title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(120)
-                val directOutputFile = File(workDir, "$sanitizedTitle.${task.outputExt}")
-                Timber.i("DownloadEngine [Stage 0]: Attempting Instant FastDirectDownloader for task %s", task.id)
-                val fastResult = FastDirectDownloader.downloadFast(
-                    taskId = task.id,
-                    videoUrl = if (task.isAudioOnly) null else directVideo,
-                    audioUrl = directAudio,
-                    outputFile = directOutputFile
-                ) { pct, downloaded, total, speedBytesPerSec ->
-                    val speedText = if (speedBytesPerSec > 0) formatBytes(speedBytesPerSec) + "/s" else "Downloading..."
-                    val update = ProgressUpdate(
-                        progress = pct.toFloat(),
-                        speedText = speedText,
-                        etaSeconds = if (speedBytesPerSec > 0 && total > downloaded) ((total - downloaded) / speedBytesPerSec) else -1L,
-                        status = if (pct >= 96 && !task.isAudioOnly && !directVideo.isNullOrBlank() && !directAudio.isNullOrBlank()) TaskStatus.MERGING else TaskStatus.DOWNLOADING,
-                        downloadedBytes = downloaded,
-                        totalBytes = total
-                    )
-                    onProgress(update)
-                }
+            val engineMode = DownloadEnginePreferences.getMode(context)
+            val fastFirst = engineMode == DownloadEngineMode.FAST
+            Timber.i("DownloadEngine: Primary engine = %s for task %s", engineMode.name, task.id)
 
-                if (fastResult.isSuccess) {
-                    val producedFile = fastResult.getOrThrow()
-                    if (producedFile.exists() && producedFile.length() > 0) {
-                        Timber.i("DownloadEngine [Stage 0]: FastDirectDownloader succeeded in <1s for task %s!", task.id)
-                        return@withContext producedFile
-                    }
+            // Fast parallel segmented engine.
+            val attemptFastDirect: suspend () -> File? = {
+                if (!nativeAudioCompatible || !fastDirectSupportsContainer) {
+                    null
+                } else if (directVideo.isNullOrBlank() && directAudio.isNullOrBlank()) {
+                    null
                 } else {
-                    Timber.w(fastResult.exceptionOrNull(), "DownloadEngine [Stage 0] failed for %s, falling back to yt-dlp", task.id)
-                    cleanSandboxForRetry(workDir)
+                    val sanitizedTitle = task.title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(120)
+                    val directOutputFile = File(workDir, "$sanitizedTitle.${task.outputExt}")
+                    try {
+                        Timber.i("DownloadEngine [Direct/Fast]: Attempting FastDirectDownloader for task %s", task.id)
+                        val fastResult = FastDirectDownloader.downloadFast(
+                            taskId = task.id,
+                            videoUrl = if (task.isAudioOnly) null else directVideo,
+                            audioUrl = directAudio,
+                            outputFile = directOutputFile
+                        ) { pct, downloaded, total, speedBytesPerSec, activeConnections, segmentCsv ->
+                            val speedText = if (speedBytesPerSec > 0) formatBytes(speedBytesPerSec) + "/s" else "Downloading..."
+                            onProgress(
+                                ProgressUpdate(
+                                    progress = pct.toFloat(),
+                                    speedText = speedText,
+                                    etaSeconds = if (speedBytesPerSec > 0 && total > downloaded) ((total - downloaded) / speedBytesPerSec) else -1L,
+                                    status = if (pct >= 96 && !task.isAudioOnly && !directVideo.isNullOrBlank() && !directAudio.isNullOrBlank()) TaskStatus.MERGING else TaskStatus.DOWNLOADING,
+                                    downloadedBytes = downloaded,
+                                    totalBytes = total,
+                                    videoBytes = if (!task.isAudioOnly) downloaded else 0L,
+                                    audioBytes = if (task.isAudioOnly) downloaded else 0L,
+                                    activeConnections = activeConnections,
+                                    segmentProgressCsv = segmentCsv
+                                )
+                            )
+                        }
+                        fastResult.getOrNull()?.takeIf { it.exists() && it.length() > 0 }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: InterruptedException) {
+                        throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused")
+                    } catch (e: Exception) {
+                        Timber.w(e, "DownloadEngine [Direct/Fast] failed for %s", task.id)
+                        null
+                    }
                 }
             }
+
+            // Legacy NewPipe JVM compatibility engine.
+            val attemptDirectJvm: suspend () -> File? = {
+                if (!isYouTube || !nativeAudioCompatible) {
+                    null
+                } else {
+                    try {
+                        Timber.i("DownloadEngine [Direct/JVM]: Attempting DirectJvmStreamDownloader for task %s", task.id)
+                        val produced = DirectJvmStreamDownloader.download(
+                            context = context,
+                            task = task,
+                            workDir = workDir,
+                            isCancelled = { isPaused(task.id) || activeTasks[task.id] != true }
+                        ) { pct, eta, speed ->
+                            val estimatedTotal = task.totalBytes
+                            val approxBytes = if (estimatedTotal > 0L) (estimatedTotal * pct / 100f).toLong() else 0L
+                            onProgress(
+                                ProgressUpdate(
+                                    progress = pct,
+                                    speedText = speed,
+                                    etaSeconds = eta,
+                                    status = if (pct >= 94f) TaskStatus.MERGING else TaskStatus.DOWNLOADING,
+                                    downloadedBytes = approxBytes,
+                                    totalBytes = estimatedTotal,
+                                    activeConnections = 2
+                                )
+                            )
+                        }
+                        produced.takeIf { it.exists() && it.length() > 0 }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: InterruptedException) {
+                        throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused")
+                    } catch (e: Exception) {
+                        Timber.w(e, "DownloadEngine [Direct/JVM] failed for %s", task.id)
+                        cleanLegacyArtifacts(workDir)
+                        null
+                    }
+                }
+            }
+
+            val primaryAttempt = if (fastFirst) attemptFastDirect else attemptDirectJvm
+            val secondaryAttempt = if (fastFirst) attemptDirectJvm else attemptFastDirect
+
+            primaryAttempt()?.let { return@withContext it }
+
+            if (isPaused(task.id) || activeTasks[task.id] != true) {
+                throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
+            }
+
+            secondaryAttempt()?.let { return@withContext it }
+
+            if (isPaused(task.id) || activeTasks[task.id] != true) {
+                throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
+            }
+
+            // Neither native path produced a complete file. Remove partial legacy artifacts
+            // so findFinishedMediaFile() cannot mistake them for the yt-dlp result.
+            cleanLegacyArtifacts(workDir)
+            cleanSandboxForRetry(workDir)
 
             // =================================================================
             // STAGE 1: Fast Public Mobile Client Path (starts in 2–4s fallback)
@@ -196,9 +294,15 @@ object DownloadEngineExecutor {
             val poArgs = WebViewSessionManager.getExtractorArgs()?.removePrefix("youtube:")?.let { ";$it" } ?: ""
             val authExtractorArgs = if (isYouTube) "youtube:player_client=tv,mweb,web;player_skip=webpage,configs$poArgs" else null
             val safeFormat = if (task.isAudioOnly) {
-                "bestaudio[ext=m4a]/bestaudio/best"
+                FormatSelectorBuilder.buildAudioSelector(task.outputExt)
             } else {
-                "bestvideo[height<=$targetHeight][ext=mp4]+bestaudio[ext=m4a]/best[height<=$targetHeight][ext=mp4]/best[height<=$targetHeight]/best"
+                FormatSelectorBuilder.buildVideoSelector(
+                    targetHeight,
+                    task.videoCodecPreference ?: "Auto",
+                    task.mergeAudioExtension ?: "Auto",
+                    task.mergeAudioLanguage,
+                    task.mergeAudioBitrateKbps
+                )
             }
 
             Timber.i("DownloadEngine [Stage 2]: Authenticated fallback (tv,mweb,web) for task %s", task.id)
@@ -287,11 +391,11 @@ object DownloadEngineExecutor {
                     addOption("--downloader-args", "aria2c:-x 8 -s 8 -k 1M -j 8")
                 } else {
                     addOption("-N", "$concurrency")
-                    addOption("--throttled-rate", "20K")
+                    addOption("--throttled-rate", "100K")
                 }
             } else {
                 addOption("-N", "$concurrency")
-                addOption("--throttled-rate", "20K")
+                addOption("--throttled-rate", "100K")
             }
             addOption("--continue")
 
@@ -310,7 +414,12 @@ object DownloadEngineExecutor {
                 addOption("--convert-thumbnails", "jpg")
             } else {
                 addOption("-f", formatSelector)
-                addOption("--merge-output-format", "mp4")
+                val mergeContainer = when (task.outputExt.lowercase()) {
+                    "webm" -> "webm"
+                    "mkv" -> "mkv"
+                    else -> "mp4"
+                }
+                addOption("--merge-output-format", mergeContainer)
             }
 
             // Advanced Options
@@ -326,9 +435,25 @@ object DownloadEngineExecutor {
         var lastDispatchedPercent = -1f
         var lastDispatchTimeMs = 0L
 
+        var streamIndex = 0
+        var completedStreamsBytes = 0L
+        var currentStreamTotalBytes = 0L
+        var lastRawStreamPercent = 0f
+        val expectedCombinedTotal = task.totalBytes.takeIf { it > 0L } ?: 0L
+        val expectedAudioBytes = task.audioBytes.takeIf { it > 0L } ?: 0L
+
         YoutubeDL.getInstance().execute(request, task.id) { progress, etaInSeconds, line ->
             val cleanLine = line.orEmpty()
             var stageText = extractSpeed(cleanLine)
+
+            if (cleanLine.contains("[download] Destination:")) {
+                if (streamIndex > 0 && currentStreamTotalBytes > 0L) {
+                    completedStreamsBytes += currentStreamTotalBytes
+                    currentStreamTotalBytes = 0L
+                    lastRawStreamPercent = 0f
+                }
+                streamIndex++
+            }
 
             val hasDownloadActivity = cleanLine.contains("[download]") && (cleanLine.contains("%") || cleanLine.contains("/s"))
             if (hasDownloadActivity) {
@@ -354,51 +479,89 @@ object DownloadEngineExecutor {
             val now = System.currentTimeMillis()
             val regexPercent = percentRegex.find(cleanLine)?.groupValues?.getOrNull(1)?.toFloatOrNull() ?: -1f
             val rawP = if (progress > 0f) progress else regexPercent
-            val p = rawP.coerceIn(0f, 100f)
 
-            // Debounce progress dispatches to avoid process stdout pipe deadlocks & SQLite write contention
+            val totalMatch = totalBytesRegex.find(cleanLine)
+            val parsedLineTotal = if (totalMatch != null) {
+                parseSizeToBytes(totalMatch.groupValues[1], totalMatch.groupValues[2])
+            } else 0L
+
+            if (rawP in 0.1f..40f && lastRawStreamPercent >= 90f && currentStreamTotalBytes > 0L) {
+                completedStreamsBytes += currentStreamTotalBytes
+                currentStreamTotalBytes = 0L
+                streamIndex = streamIndex.coerceAtLeast(1) + 1
+            } else if (parsedLineTotal > 0L && currentStreamTotalBytes > 0L && parsedLineTotal < (currentStreamTotalBytes * 4L) / 10L && completedStreamsBytes == 0L) {
+                completedStreamsBytes += currentStreamTotalBytes
+                currentStreamTotalBytes = parsedLineTotal
+                streamIndex = streamIndex.coerceAtLeast(1) + 1
+            }
+
+            if (rawP > 0f) lastRawStreamPercent = rawP
+            if (parsedLineTotal > 0L) currentStreamTotalBytes = parsedLineTotal
+
+            val unifiedTotalBytes = when {
+                task.isAudioOnly -> {
+                    currentStreamTotalBytes.takeIf { it > 0L } ?: expectedCombinedTotal
+                }
+                completedStreamsBytes > 0L && currentStreamTotalBytes > 0L -> {
+                    maxOf(expectedCombinedTotal, completedStreamsBytes + currentStreamTotalBytes)
+                }
+                currentStreamTotalBytes > 0L -> {
+                    val audioReserve = when {
+                        expectedAudioBytes > 0L -> expectedAudioBytes
+                        expectedCombinedTotal > currentStreamTotalBytes -> expectedCombinedTotal - currentStreamTotalBytes
+                        else -> (currentStreamTotalBytes * 9L) / 100L
+                    }
+                    maxOf(expectedCombinedTotal, currentStreamTotalBytes + audioReserve)
+                }
+                else -> expectedCombinedTotal
+            }
+
+            val currentStreamDownloaded = if (rawP > 0f && currentStreamTotalBytes > 0L) {
+                (currentStreamTotalBytes * (rawP / 100f)).toLong()
+            } else 0L
+
+            val unifiedDownloadedBytes = if (currentStatus == TaskStatus.MERGING && unifiedTotalBytes > 0L) {
+                unifiedTotalBytes
+            } else {
+                (completedStreamsBytes + currentStreamDownloaded).let {
+                    if (unifiedTotalBytes > 0L) it.coerceAtMost(unifiedTotalBytes) else it
+                }
+            }
+
+            val unifiedProgress = when {
+                currentStatus == TaskStatus.MERGING -> 98f
+                unifiedTotalBytes > 0L -> ((unifiedDownloadedBytes.toFloat() / unifiedTotalBytes.toFloat()) * 95f).coerceIn(0f, 95f)
+                rawP > 0f -> rawP.coerceIn(0f, 95f)
+                else -> 0f
+            }
+
             val statusChanged = (currentStatus == TaskStatus.MERGING)
-            val isFirstDownloadDispatch = lastDispatchedPercent < 0f && (p > 0f || hasDownloadActivity)
-            val significantProgress = (p - lastDispatchedPercent) >= 1.0f || p == 100f
+            val isFirstDownloadDispatch = lastDispatchedPercent < 0f && (unifiedProgress > 0f || hasDownloadActivity)
+            val significantProgress = (unifiedProgress - lastDispatchedPercent) >= 0.5f || unifiedProgress >= 98f
             val timeElapsed = (now - lastDispatchTimeMs) >= 250L || isFirstDownloadDispatch
 
             if (significantProgress || timeElapsed || statusChanged || stageText.startsWith("yt-dlp:")) {
-                lastDispatchedPercent = p
+                lastDispatchedPercent = unifiedProgress
                 lastDispatchTimeMs = now
-
-                var parsedTotal = 0L
-                var parsedDownloaded = 0L
-
-                val totalMatch = totalBytesRegex.find(cleanLine)
-                if (totalMatch != null) {
-                    parsedTotal = parseSizeToBytes(totalMatch.groupValues[1], totalMatch.groupValues[2])
-                }
-                if (parsedTotal <= 0L) {
-                    parsedTotal = task.totalBytes
-                }
-
-                val dlMatch = downloadedBytesRegex.find(cleanLine)
-                if (dlMatch != null) {
-                    parsedDownloaded = parseSizeToBytes(dlMatch.groupValues[1], dlMatch.groupValues[2])
-                }
-                if (p > 0f && parsedTotal > 0L) {
-                    parsedDownloaded = (parsedTotal * (p / 100f)).toLong()
-                }
 
                 val effectiveSpeedText = when {
                     currentStatus == TaskStatus.MERGING -> "Merging audio and video..."
                     stageText.isNotBlank() -> stageText
-                    p >= 100f -> "Finishing..."
+                    unifiedProgress >= 100f -> "Finishing..."
                     else -> "Downloading..."
                 }
 
                 val update = ProgressUpdate(
-                    progress = p.coerceIn(0f, 100f),
+                    progress = unifiedProgress,
                     speedText = effectiveSpeedText,
                     etaSeconds = etaInSeconds,
                     status = currentStatus,
-                    downloadedBytes = parsedDownloaded,
-                    totalBytes = parsedTotal
+                    downloadedBytes = unifiedDownloadedBytes,
+                    totalBytes = unifiedTotalBytes,
+                    videoBytes = if (streamIndex <= 1) unifiedDownloadedBytes else completedStreamsBytes,
+                    audioBytes = if (streamIndex > 1) currentStreamDownloaded else 0L,
+                    activeConnections = concurrency,
+                    segmentProgressCsv = ""
                 )
 
                 if (isPaused(task.id) || activeTasks[task.id] != true) {
@@ -425,6 +588,131 @@ object DownloadEngineExecutor {
 
         Timber.i("Download task %s produced media file: %s (%d bytes)", task.id, finalFile.name, finalFile.length())
         return finalFile
+    }
+
+    /**
+     * Re-resolves a video stream while respecting the user's codec preference. Prefers an exact
+     * height match, then the highest available height at or below the requested one.
+     */
+    private fun selectReResolvedVideo(
+        options: List<VideoQualityOption>,
+        targetHeight: Int,
+        codecPreference: String?
+    ): VideoQualityOption? {
+        if (options.isEmpty()) return null
+        val exact = options.filter { it.height == targetHeight }
+        val atOrBelow = options.filter { it.height <= targetHeight }
+        val normalizedCodec = codecPreference?.takeIf { it.isNotBlank() && !it.equals("Auto", true) }
+
+        fun matchingCodec(pool: List<VideoQualityOption>): VideoQualityOption? =
+            normalizedCodec?.let { codec -> pool.firstOrNull { it.vcodec.equals(codec, true) } }
+
+        return matchingCodec(exact)
+            ?: exact.firstOrNull { it.vcodec.equals("H.264", true) }
+            ?: exact.firstOrNull()
+            ?: matchingCodec(atOrBelow)
+            ?: atOrBelow.firstOrNull()
+            ?: options.firstOrNull()
+    }
+
+    /**
+     * Re-resolves the muxed audio stream using the exact track chosen in the picker, falling back
+     * to the default/original track and a container compatible with the video output.
+     */
+    private fun selectReResolvedAudio(
+        options: List<AudioQualityOption>,
+        task: DownloadTaskEntity,
+        matchedVideo: VideoQualityOption?
+    ): AudioQualityOption? {
+        if (options.isEmpty()) return null
+
+        if (task.isAudioOnly) {
+            val extension = task.outputExt.lowercase()
+            val bitrate = task.mergeAudioBitrateKbps
+            val bitrateMatches: (AudioQualityOption) -> Boolean = { option ->
+                bitrate == null || abs(option.bitrateKbps - bitrate) <= 16
+            }
+            return options.firstOrNull { it.extension.equals(extension, true) && it.isOriginalOrDefault && bitrateMatches(it) }
+                ?: options.firstOrNull { it.extension.equals(extension, true) && bitrateMatches(it) }
+                ?: options.firstOrNull { it.extension.equals(extension, true) && it.isOriginalOrDefault }
+                ?: options.firstOrNull { it.extension.equals(extension, true) }
+                ?: options.firstOrNull { it.isOriginalOrDefault }
+                ?: options.first()
+        }
+
+        val preferredExtension = task.mergeAudioExtension
+            ?.lowercase()
+            ?.takeIf { it == "m4a" || it == "opus" }
+            ?: if (matchedVideo?.vcodec?.equals("VP9", ignoreCase = true) == true) {
+                "opus"
+            } else if ((matchedVideo?.container ?: "mp4").equals("mp4", true)) {
+                "m4a"
+            } else {
+                "opus"
+            }
+        val compatible = options.filter { it.extension.equals(preferredExtension, true) }
+        val pool = compatible.ifEmpty { options }
+
+        val trackId = task.mergeAudioTrackId
+        val trackName = task.mergeAudioTrackName
+        val language = task.mergeAudioLanguage
+        val bitrate = task.mergeAudioBitrateKbps
+        // Player-response and NewPipe bitrates for the same stream can differ by a few kbps.
+        val bitrateMatches: (AudioQualityOption) -> Boolean = { option ->
+            bitrate == null || abs(option.bitrateKbps - bitrate) <= 16
+        }
+        val matchesRequestedTrack: (AudioQualityOption) -> Boolean = { option ->
+            (!trackId.isNullOrBlank() && option.audioTrackId == trackId) ||
+                (!trackName.isNullOrBlank() && option.audioTrackName?.equals(trackName, true) == true) ||
+                (!language.isNullOrBlank() && option.audioLanguage
+                    ?.substringBefore('-')
+                    ?.equals(language.substringBefore('-'), true) == true)
+        }
+        val hasTrackRequest = !trackId.isNullOrBlank() || !trackName.isNullOrBlank() || !language.isNullOrBlank()
+        if (hasTrackRequest) {
+            pool.filter { matchesRequestedTrack(it) && bitrateMatches(it) }
+                .firstOrNull { it.isOriginalOrDefault }
+                ?.let { return it }
+            pool.filter { matchesRequestedTrack(it) && bitrateMatches(it) }
+                .maxByOrNull { it.bitrateKbps }
+                ?.let { return it }
+            pool.filter { matchesRequestedTrack(it) }.maxByOrNull { it.bitrateKbps }?.let { return it }
+            options.filter { matchesRequestedTrack(it) }.maxByOrNull { it.bitrateKbps }?.let { return it }
+        }
+
+        // No track metadata (or no match): honor the exact bitrate the user saw in the picker.
+        if (bitrate != null) {
+            options.filter { bitrateMatches(it) && it.extension.equals(preferredExtension, true) }
+                .maxByOrNull { it.bitrateKbps }
+                ?.let { return it }
+        }
+
+        return pool.filter { it.isOriginalOrDefault }.maxByOrNull { it.bitrateKbps }
+            ?: pool.maxByOrNull { it.bitrateKbps }
+    }
+
+    /**
+     * Deletes only files produced by the legacy JVM engine. yt-dlp's own partial downloads use a
+     * different naming template and are intentionally preserved for resume.
+     */
+    private fun cleanLegacyArtifacts(workDir: File) {
+        try {
+            val legacyPrefixes = listOf(
+                "output.",
+                "temp_video.",
+                "temp_audio.",
+                "keep_part_",
+                "trimmed_output."
+            )
+            workDir.listFiles()?.forEach { file ->
+                val name = file.name.lowercase()
+                if (name == "concat.txt" || legacyPrefixes.any { name.startsWith(it) }) {
+                    file.deleteRecursively()
+                }
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Could not clean legacy artifacts in %s", workDir.absolutePath)
+        }
     }
 
     private fun cleanSandboxForRetry(workDir: File) {
@@ -484,7 +772,6 @@ object DownloadEngineExecutor {
     private val percentRegex = Regex("""(\d+(?:\.\d+)?)%""")
     private val speedRegex = Regex("at\\s+([\\d.]+[KMGT]?i?B/s)")
     private val totalBytesRegex = Regex("""of\s+~?\s*([\d.]+)\s*([KMGT]?i?B)""", RegexOption.IGNORE_CASE)
-    private val downloadedBytesRegex = Regex("""\[download\]\s+([\d.]+)\s*([KMGT]?i?B)\s+of""", RegexOption.IGNORE_CASE)
 
     private fun parseSizeToBytes(valueStr: String, unitStr: String): Long {
         val num = valueStr.toDoubleOrNull() ?: return 0L

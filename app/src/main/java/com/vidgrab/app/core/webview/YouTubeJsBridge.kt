@@ -23,6 +23,7 @@ data class DownloadTriggerPayload(
  */
 class YouTubeJsBridge(
     private val onDownloadTriggered: (DownloadTriggerPayload) -> Unit,
+    private val onPayloadRefreshed: ((DownloadTriggerPayload) -> Unit)? = null,
     private val onUrlChanged: ((String, String) -> Unit)? = null
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -84,6 +85,35 @@ class YouTubeJsBridge(
     @JavascriptInterface
     fun onDownloadClicked(url: String, itemType: String, title: String, inlinePlayerJson: String?) {
         onDownloadClicked(url, itemType, title, inlinePlayerJson, 0L, null)
+    }
+
+    /**
+     * Late-arriving fresher player response for a trigger that was already delivered to the UI.
+     * Native applies it only while the quality picker is still loading for the same URL, so this
+     * can never re-open a dismissed sheet or clobber selections the user already made.
+     */
+    @JavascriptInterface
+    fun onDownloadPayloadRefreshed(url: String, itemType: String, title: String, inlinePlayerJson: String?, durationSeconds: Long, playlistItemsJson: String?) {
+        if (inlinePlayerJson.isNullOrBlank()) return
+        val cleanUrl = if (itemType == "PLAYLIST") {
+            val pid = com.vidgrab.app.core.extractor.DualEngineMetadataResolver.extractPlaylistId(url)
+            if (pid != null) "https://www.youtube.com/playlist?list=$pid" else url
+        } else {
+            com.vidgrab.app.core.extractor.DualEngineMetadataResolver.sanitizeMediaUrl(url)
+        }
+        Timber.d("YouTubeJsBridge: onDownloadPayloadRefreshed [type=%s, cleanUrl=%s, %d bytes]", itemType, cleanUrl, inlinePlayerJson.length)
+
+        val payload = DownloadTriggerPayload(
+            url = cleanUrl,
+            itemType = itemType,
+            title = title.ifBlank { "YouTube Media" },
+            inlinePlayerJson = inlinePlayerJson,
+            durationSeconds = durationSeconds.coerceAtLeast(0L),
+            playlistItemsJson = playlistItemsJson?.takeIf { it.isNotBlank() }
+        )
+        mainHandler.post {
+            onPayloadRefreshed?.invoke(payload)
+        }
     }
 
     @JavascriptInterface

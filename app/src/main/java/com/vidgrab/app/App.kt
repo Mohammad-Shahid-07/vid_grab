@@ -66,8 +66,10 @@ class App : Application() {
         com.vidgrab.app.core.worker.DownloadNotificationManager.createNotificationChannel(this)
 
         // Pre-warm database, queue repository, and engine preferences
-        com.vidgrab.app.core.queue.QueueRepository.getInstance(this)
+        val queueRepo = com.vidgrab.app.core.queue.QueueRepository.getInstance(this)
+        queueRepo.resetInterruptedTasks()
         com.vidgrab.app.core.engine.YtDlpUpdater.init(this)
+        com.vidgrab.app.core.engine.DownloadEnginePreferences.init(this)
         com.vidgrab.app.core.webview.AdBlockEngine.init(this)
 
         // Asynchronously initialize native binaries and extraction engines to prevent ANR on cold start

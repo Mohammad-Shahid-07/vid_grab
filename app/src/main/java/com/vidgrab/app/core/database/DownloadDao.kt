@@ -12,17 +12,11 @@ interface DownloadDao {
 
     @Query("""
         SELECT * FROM download_tasks 
+        WHERE status != 'CANCELLED'
         ORDER BY 
-            CASE status 
-                WHEN 'DOWNLOADING' THEN 1 
-                WHEN 'MERGING' THEN 2 
-                WHEN 'EXPANDING' THEN 3 
-                WHEN 'PENDING' THEN 4 
-                WHEN 'PAUSED' THEN 5 
-                WHEN 'FAILED' THEN 6 
-                WHEN 'COMPLETED' THEN 7 
-                ELSE 8 
-            END ASC, 
+            CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END ASC, 
+            queueGroup DESC,
+            queueIndex ASC,
             createdAt ASC
     """)
     fun getAllTasksFlow(): Flow<List<DownloadTaskEntity>>
@@ -30,14 +24,7 @@ interface DownloadDao {
     @Query("""
         SELECT * FROM download_tasks 
         WHERE status IN ('DOWNLOADING', 'MERGING', 'EXPANDING', 'PENDING') 
-        ORDER BY 
-            CASE status 
-                WHEN 'DOWNLOADING' THEN 1 
-                WHEN 'MERGING' THEN 2 
-                WHEN 'EXPANDING' THEN 3 
-                ELSE 4 
-            END ASC, 
-            createdAt ASC
+        ORDER BY queueGroup ASC, queueIndex ASC, createdAt ASC
     """)
     fun getActiveTasksFlow(): Flow<List<DownloadTaskEntity>>
 
@@ -47,13 +34,19 @@ interface DownloadDao {
     @Query("SELECT * FROM download_tasks WHERE status = 'COMPLETED' ORDER BY updatedAt DESC")
     fun getCompletedTasksFlow(): Flow<List<DownloadTaskEntity>>
 
-    @Query("SELECT * FROM download_tasks WHERE status = 'PENDING' ORDER BY createdAt ASC LIMIT 1")
+    @Query("SELECT * FROM download_tasks WHERE status = 'PENDING' ORDER BY queueGroup ASC, queueIndex ASC, createdAt ASC LIMIT 1")
     suspend fun getNextPendingTask(): DownloadTaskEntity?
 
-    @Query("SELECT * FROM download_tasks WHERE status = 'PENDING' ORDER BY createdAt ASC LIMIT :limit")
+    @Query("SELECT * FROM download_tasks WHERE status = 'PENDING' ORDER BY queueGroup ASC, queueIndex ASC, createdAt ASC LIMIT :limit")
     suspend fun getNextPendingTasks(limit: Int): List<DownloadTaskEntity>
 
-    @Query("UPDATE download_tasks SET status = 'PAUSED', updatedAt = :updatedAt WHERE status IN ('PENDING', 'DOWNLOADING', 'MERGING')")
+    @Query("SELECT COUNT(*) FROM download_tasks WHERE status IN ('DOWNLOADING', 'MERGING', 'EXPANDING')")
+    suspend fun countInterruptedTasks(): Int
+
+    @Query("UPDATE download_tasks SET status = 'PENDING', speedText = '', updatedAt = :updatedAt WHERE status IN ('DOWNLOADING', 'MERGING', 'EXPANDING')")
+    suspend fun resetInterruptedTasks(updatedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE download_tasks SET status = 'PAUSED', updatedAt = :updatedAt WHERE status IN ('PENDING', 'DOWNLOADING', 'MERGING', 'EXPANDING')")
     suspend fun pauseAllTasks(updatedAt: Long = System.currentTimeMillis())
 
     @Query("UPDATE download_tasks SET status = 'PENDING', updatedAt = :updatedAt WHERE status = 'PAUSED'")
@@ -82,6 +75,10 @@ interface DownloadDao {
         SET progressPercent = :progress, 
             downloadedBytes = :downloadedBytes, 
             totalBytes = :totalBytes, 
+            videoBytes = :videoBytes,
+            audioBytes = :audioBytes,
+            activeConnections = :activeConnections,
+            segmentProgressCsv = :segmentProgressCsv,
             speedText = :speed, 
             etaSeconds = :eta, 
             status = :status, 
@@ -96,6 +93,10 @@ interface DownloadDao {
         speed: String,
         eta: Long,
         status: TaskStatus,
+        videoBytes: Long = 0L,
+        audioBytes: Long = 0L,
+        activeConnections: Int = 8,
+        segmentProgressCsv: String = "",
         updatedAt: Long = System.currentTimeMillis()
     )
 
@@ -105,6 +106,9 @@ interface DownloadDao {
             progressPercent = 100.0, 
             totalBytes = :realSizeBytes, 
             downloadedBytes = :realSizeBytes, 
+            speedText = '',
+            activeConnections = 0,
+            segmentProgressCsv = '',
             outputFileUri = :fileUri, 
             outputFilePath = :filePath, 
             updatedAt = :updatedAt 
@@ -121,7 +125,7 @@ interface DownloadDao {
     @Query("UPDATE download_tasks SET status = 'FAILED', errorMessage = :error, updatedAt = :updatedAt WHERE id = :id")
     suspend fun markFailed(id: String, error: String, updatedAt: Long = System.currentTimeMillis())
 
-    @Query("UPDATE download_tasks SET status = 'PENDING', progressPercent = 0.0, errorMessage = NULL, updatedAt = :updatedAt WHERE id = :id")
+    @Query("UPDATE download_tasks SET status = 'PENDING', progressPercent = 0.0, downloadedBytes = 0, speedText = '', activeConnections = 0, segmentProgressCsv = '', errorMessage = NULL, updatedAt = :updatedAt WHERE id = :id")
     suspend fun resetForRetry(id: String, updatedAt: Long = System.currentTimeMillis())
 
     @Query("DELETE FROM download_tasks WHERE id = :id")

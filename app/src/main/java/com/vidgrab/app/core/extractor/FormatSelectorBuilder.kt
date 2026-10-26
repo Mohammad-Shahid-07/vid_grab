@@ -9,30 +9,85 @@ package com.vidgrab.app.core.extractor
 object FormatSelectorBuilder {
 
     /**
-     * Builds the yt-dlp video format selector for a given max height constraint and codec preference.
+     * Builds the yt-dlp video format selector for a given max height constraint, video codec
+     * preference, and audio container preference.
+     *
+     * [vcodec] accepts "H.264", "VP9", "AV1" or "Auto" (null / blank also means Auto).
+     * [audioPreference] accepts "M4A", "Opus" or "Auto".
      */
-    fun buildVideoSelector(height: Int, vcodec: String = "H.264"): String {
-        return when (vcodec) {
-            "VP9" -> "bestvideo[height<=$height][vcodec^=vp9]+bestaudio[acodec^=opus]/" +
-                    "bestvideo[height<=$height][vcodec^=vp09]+bestaudio/" +
-                    "bestvideo[height<=$height]+bestaudio/best"
-            "AV1" -> "bestvideo[height<=$height][vcodec^=av01]+bestaudio[acodec^=opus]/" +
-                    "bestvideo[height<=$height]+bestaudio/best"
-            else -> "bestvideo[height<=$height][vcodec^=avc1]+bestaudio[acodec^=mp4a]/" +
-                    "bestvideo[height<=$height][ext=mp4]+bestaudio[ext=m4a]/" +
-                    "bestvideo[height<=$height]+bestaudio/" +
-                    "best[height<=$height]/best"
+    fun buildVideoSelector(
+        height: Int,
+        vcodec: String = "H.264",
+        audioPreference: String = "Auto",
+        audioLanguage: String? = null,
+        audioBitrateKbps: Int? = null
+    ): String {
+        val normalizedCodec = vcodec.trim().uppercase()
+        val normalizedAudio = audioPreference.trim().uppercase()
+        val languageFilter = audioLanguage
+            ?.trim()
+            ?.substringBefore('-')
+            ?.takeIf { it.matches(Regex("[A-Za-z]{2,3}")) }
+            ?.let { "[language^=$it]" }
+        val bitrateCap = audioBitrateKbps
+            ?.takeIf { it > 0 }
+            // Small tolerance: the player response and yt-dlp report abr slightly differently,
+            // and an exact cap would otherwise exclude the very stream the user picked.
+            ?.let { "[abr<=${it + 16}]" }
+
+        // Preserve the proven default chains when no explicit audio preference is requested.
+        if (normalizedAudio == "AUTO" && languageFilter == null && bitrateCap == null) {
+            return when (normalizedCodec) {
+                "VP9" -> "bestvideo[height<=$height][vcodec^=vp9]+bestaudio[acodec^=opus]/" +
+                        "bestvideo[height<=$height][vcodec^=vp09]+bestaudio/" +
+                        "bestvideo[height<=$height]+bestaudio/best"
+                "AV1" -> "bestvideo[height<=$height][vcodec^=av01]+bestaudio[acodec^=mp4a]/" +
+                        "bestvideo[height<=$height][vcodec^=av01]+bestaudio/" +
+                        "bestvideo[height<=$height]+bestaudio/best"
+                "H.264", "H264", "AVC", "AUTO", "" -> "bestvideo[height<=$height][vcodec^=avc1]+bestaudio[acodec^=mp4a]/" +
+                        "bestvideo[height<=$height][ext=mp4]+bestaudio[ext=m4a]/" +
+                        "bestvideo[height<=$height]+bestaudio/" +
+                        "best[height<=$height]/best"
+                else -> "bestvideo[height<=$height]+bestaudio/" +
+                        "best[height<=$height]/best"
+            }
         }
+
+        val videoBase = when (normalizedCodec) {
+            "VP9" -> "bestvideo[height<=$height][vcodec^=vp9]"
+            "AV1" -> "bestvideo[height<=$height][vcodec^=av01]"
+            "H.264", "H264", "AVC" -> "bestvideo[height<=$height][vcodec^=avc1]"
+            // Auto with an explicit audio preference: bias to H.264 first for MP4 safety,
+            // then let the generic fallback pick whatever exists at this height.
+            else -> "bestvideo[height<=$height][vcodec^=avc1]"
+        }
+        val audioBase = when (normalizedAudio) {
+            "M4A", "AAC" -> "bestaudio[ext=m4a]"
+            "OPUS", "WEBM" -> "bestaudio[ext=webm]"
+            else -> "bestaudio"
+        }
+        val preferredAudio = "$audioBase${bitrateCap.orEmpty()}${languageFilter.orEmpty()}"
+
+        return "$videoBase+$preferredAudio/" +
+                "$videoBase+$audioBase/" +
+                "bestvideo[height<=$height]+bestaudio/" +
+                "best[height<=$height]/best"
     }
 
     /**
      * Builds the yt-dlp audio-only format selector.
+     * [bitrateKbps] caps the chosen stream (with a small tolerance) when the user picked a
+     * concrete bitrate in the audio tab.
      */
-    fun buildAudioSelector(extension: String): String {
+    fun buildAudioSelector(extension: String, bitrateKbps: Int? = null): String {
+        val cap = bitrateKbps
+            ?.takeIf { it > 0 }
+            ?.let { "[abr<=${it + 16}]" }
+            .orEmpty()
         return when (extension.lowercase()) {
-            "m4a", "aac" -> "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best"
-            "opus", "webm" -> "bestaudio[ext=webm]/bestaudio[acodec^=opus]/bestaudio/best"
-            else -> "bestaudio/best"
+            "m4a", "aac" -> "bestaudio[ext=m4a]$cap/bestaudio[acodec^=mp4a]$cap/bestaudio$cap/best"
+            "opus", "webm" -> "bestaudio[ext=webm]$cap/bestaudio[acodec^=opus]$cap/bestaudio$cap/best"
+            else -> "bestaudio$cap/best"
         }
     }
 
@@ -41,61 +96,30 @@ object FormatSelectorBuilder {
      */
     fun buildStandardPresets(estimatedDurationSec: Long = 0L): Pair<List<VideoQualityOption>, List<AudioQualityOption>> {
         val dur = if (estimatedDurationSec > 0L) estimatedDurationSec else 180L
-        val videoPresets = listOf(
-            VideoQualityOption(
-                height = 1080,
-                label = "1080p Full HD",
-                fps = 60,
+        val pairedAudioBytes = (128000L * dur) / 8L
+
+        fun videoPreset(height: Int, label: String, fps: Int, vBitrate: Long): VideoQualityOption {
+            val videoBytes = (vBitrate * dur) / 8L
+            return VideoQualityOption(
+                height = height,
+                label = label,
+                fps = fps,
                 vcodec = "H.264",
                 container = "mp4",
-                estimatedTotalBytes = ((2500000L + 128000L) * dur) / 8L,
-                formatSelector = buildVideoSelector(1080)
-            ),
-            VideoQualityOption(
-                height = 720,
-                label = "720p HD",
-                fps = 60,
-                vcodec = "H.264",
-                container = "mp4",
-                estimatedTotalBytes = ((1200000L + 128000L) * dur) / 8L,
-                formatSelector = buildVideoSelector(720)
-            ),
-            VideoQualityOption(
-                height = 480,
-                label = "480p Standard",
-                fps = 30,
-                vcodec = "H.264",
-                container = "mp4",
-                estimatedTotalBytes = ((650000L + 128000L) * dur) / 8L,
-                formatSelector = buildVideoSelector(480)
-            ),
-            VideoQualityOption(
-                height = 360,
-                label = "360p Medium",
-                fps = 30,
-                vcodec = "H.264",
-                container = "mp4",
-                estimatedTotalBytes = ((400000L + 128000L) * dur) / 8L,
-                formatSelector = buildVideoSelector(360)
-            ),
-            VideoQualityOption(
-                height = 240,
-                label = "240p Compact",
-                fps = 30,
-                vcodec = "H.264",
-                container = "mp4",
-                estimatedTotalBytes = ((220000L + 128000L) * dur) / 8L,
-                formatSelector = buildVideoSelector(240)
-            ),
-            VideoQualityOption(
-                height = 144,
-                label = "144p Data Saver",
-                fps = 30,
-                vcodec = "H.264",
-                container = "mp4",
-                estimatedTotalBytes = ((110000L + 128000L) * dur) / 8L,
-                formatSelector = buildVideoSelector(144)
+                videoOnlyBytes = videoBytes,
+                audioStreamBytes = pairedAudioBytes,
+                estimatedTotalBytes = videoBytes + pairedAudioBytes,
+                formatSelector = buildVideoSelector(height)
             )
+        }
+
+        val videoPresets = listOf(
+            videoPreset(1080, "1080p Full HD", 60, 2500000L),
+            videoPreset(720, "720p HD", 60, 1200000L),
+            videoPreset(480, "480p Standard", 30, 650000L),
+            videoPreset(360, "360p Medium", 30, 400000L),
+            videoPreset(240, "240p Compact", 30, 220000L),
+            videoPreset(144, "144p Data Saver", 30, 110000L)
         )
 
         val audioPresets = listOf(

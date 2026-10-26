@@ -2,12 +2,18 @@ package com.vidgrab.app.ui.theme
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.material3.LocalContentColor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,7 +38,8 @@ data class AppThemePalette(
     val swatchBg: Color,
     val swatchCard: Color,
     val dividerColor: Color,
-    val successGreen: Color = Color(0xFF2C6954)
+    val successGreen: Color = Color(0xFF2C6954),
+    val errorRed: Color = Color(0xFFE54D2E)
 )
 
 data class AccentSwatch(
@@ -62,7 +69,9 @@ object AppThemes {
         ctaText = Color(0xFF0E0E11),
         swatchBg = Color(0xFF0E0E11),
         swatchCard = Color(0xFF24242E),
-        dividerColor = Color(0xFF27272F)
+        dividerColor = Color(0xFF27272F),
+        successGreen = Color(0xFF5FD3A6),
+        errorRed = Color(0xFFFF7A66)
     )
 
     val Daylight = AppThemePalette(
@@ -84,7 +93,9 @@ object AppThemes {
         ctaText = Color(0xFFFFFFFF),
         swatchBg = Color(0xFFF4F6F9),
         swatchCard = Color(0xFFFFFFFF),
-        dividerColor = Color(0xFFE6EBF2)
+        dividerColor = Color(0xFFE6EBF2),
+        successGreen = Color(0xFF1C7A5A),
+        errorRed = Color(0xFFB3261E)
     )
 
     val Botanical = AppThemePalette(
@@ -106,7 +117,9 @@ object AppThemes {
         ctaText = Color(0xFF141C04),
         swatchBg = Color(0xFF0C1310),
         swatchCard = Color(0xFF20332A),
-        dividerColor = Color(0xFF1B2A23)
+        dividerColor = Color(0xFF1B2A23),
+        successGreen = Color(0xFF9BE8B8),
+        errorRed = Color(0xFFFF8A80)
     )
 
     val WarmSand = AppThemePalette(
@@ -128,7 +141,9 @@ object AppThemes {
         ctaText = Color(0xFFFFFFFF),
         swatchBg = Color(0xFFF5F2EC),
         swatchCard = Color(0xFFFFFFFF),
-        dividerColor = Color(0xFFEDE6DD)
+        dividerColor = Color(0xFFEDE6DD),
+        successGreen = Color(0xFF1C7A5A),
+        errorRed = Color(0xFFB3261E)
     )
 
     val ALL = listOf(Obsidian, Daylight, Botanical, WarmSand)
@@ -211,9 +226,52 @@ fun VidGrabTheme(
     val currentTheme by themeManager.themeState.collectAsState()
     val currentAccent by themeManager.accentState.collectAsState()
 
+    // Keep Material3 defaults in sync with the selected palette. Without this, any component
+    // that relies on LocalContentColor would render black-on-black in the dark themes.
+    val scheme = if (currentTheme.isDark) {
+        darkColorScheme(
+            primary = currentAccent.color,
+            onPrimary = currentAccent.text,
+            primaryContainer = currentAccent.color,
+            onPrimaryContainer = currentAccent.text,
+            secondary = currentAccent.color,
+            onSecondary = currentAccent.text,
+            background = currentTheme.phoneBg,
+            onBackground = currentTheme.textPrimary,
+            surface = currentTheme.cardBg,
+            onSurface = currentTheme.textPrimary,
+            surfaceVariant = currentTheme.pillBg,
+            onSurfaceVariant = currentTheme.textSecondary,
+            outline = currentTheme.dividerColor,
+            error = currentTheme.errorRed,
+            onError = currentTheme.ctaText
+        )
+    } else {
+        lightColorScheme(
+            primary = currentAccent.color,
+            onPrimary = currentAccent.text,
+            primaryContainer = currentAccent.color,
+            onPrimaryContainer = currentAccent.text,
+            secondary = currentAccent.color,
+            onSecondary = currentAccent.text,
+            background = currentTheme.phoneBg,
+            onBackground = currentTheme.textPrimary,
+            surface = currentTheme.cardBg,
+            onSurface = currentTheme.textPrimary,
+            surfaceVariant = currentTheme.pillBg,
+            onSurfaceVariant = currentTheme.textSecondary,
+            outline = currentTheme.dividerColor,
+            error = currentTheme.errorRed,
+            onError = currentTheme.ctaText
+        )
+    }
+
     CompositionLocalProvider(
         LocalAppPalette provides currentTheme,
         LocalAccentSwatch provides currentAccent,
-        content = content
-    )
+        LocalContentColor provides currentTheme.textPrimary,
+        LocalTextStyle provides TextStyle(color = currentTheme.textPrimary)
+    ) {
+        MaterialTheme(colorScheme = scheme, content = content)
+    }
 }

@@ -2,11 +2,25 @@ package com.vidgrab.app.ui.modal
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +64,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -62,11 +77,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vidgrab.app.core.extractor.AudioQualityOption
 import com.vidgrab.app.core.extractor.DownloadRequestSpec
 import com.vidgrab.app.core.extractor.ResolvedMediaInfo
 import com.vidgrab.app.core.extractor.VideoQualityOption
 import com.vidgrab.app.core.extractor.formatBytes
 import com.vidgrab.app.ui.theme.AppTheme
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -100,6 +117,7 @@ fun QualityPickerBottomSheet(
                     .heightIn(max = maxSheetHeight)
                     .animateContentSize(),
                 color = theme.sheetBg,
+                contentColor = theme.textPrimary,
                 shape = RoundedCornerShape(26.dp),
                 border = BorderStroke(1.dp, theme.dividerColor),
                 shadowElevation = 8.dp
@@ -114,6 +132,9 @@ fun QualityPickerBottomSheet(
                             onTabSelected = { isAudioOnly -> viewModel.selectTab(isAudioOnly) },
                             onVideoHeightSelected = { h -> viewModel.selectVideoHeight(h) },
                             onVideoVariantSelected = { variant -> viewModel.selectVideoVariant(variant) },
+                            onMergeAudioStreamSelected = { key -> viewModel.selectMergeAudioStream(key) },
+                            onBatchVideoCodecSelected = { codec -> viewModel.selectBatchVideoCodec(codec) },
+                            onBatchMergeAudioExtensionSelected = { ext -> viewModel.selectBatchMergeAudioExtension(ext) },
                             onAudioSelected = { ext, br -> viewModel.selectAudio(ext, br) },
                             onToggleBatchItem = { url -> viewModel.toggleBatchItem(url) },
                             onToggleSelectAll = { selectAll -> viewModel.toggleSelectAllBatch(selectAll) },
@@ -123,6 +144,7 @@ fun QualityPickerBottomSheet(
                             onToggleEmbedChapters = { enabled -> viewModel.toggleEmbedChapters(enabled) },
                             onMoveItemUp = { index -> viewModel.moveBatchItemUp(index) },
                             onMoveItemDown = { index -> viewModel.moveBatchItemDown(index) },
+                            onMoveItem = { from, to -> viewModel.moveBatchItem(from, to) },
                             onDownloadFolderSelected = { folder -> viewModel.setDownloadFolder(folder) },
                             onStartDownload = {
                                 viewModel.buildDownloadRequestSpec()?.let { spec ->
@@ -142,8 +164,108 @@ fun QualityPickerBottomSheet(
     }
 }
 
+/**
+ * One selectable chip. [key] is the value handed back to the view model, [title] is what the user
+ * reads. Keeping them as named fields makes the two impossible to swap at a call site.
+ */
+private data class SelectionChip(val key: String?, val title: String)
+
+@Composable
+private fun SelectionChipRow(
+    label: String,
+    options: List<SelectionChip>,
+    selectedKey: String?,
+    accentColor: Color,
+    onSelected: (String?) -> Unit
+) {
+    val theme = AppTheme.colors
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = theme.textSecondary
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            options.forEach { chip ->
+                val selected = chip.key == selectedKey
+                Surface(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onSelected(chip.key) },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (selected) accentColor.copy(alpha = 0.16f) else theme.pillTrackBg,
+                    border = BorderStroke(
+                        1.dp,
+                        if (selected) accentColor else theme.dividerColor.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        if (selected) {
+                            Box(
+                                modifier = Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(accentColor)
+                            )
+                        }
+                        Text(
+                            text = chip.title,
+                            fontSize = 11.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (selected) accentColor else theme.textPrimary,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun audioTrackChipLabel(track: AudioQualityOption): String {
+    val raw = track.audioTrackName?.takeIf { it.isNotBlank() }
+        ?: track.audioLanguage?.takeIf { it.isNotBlank() }
+        ?: "Default"
+    val cleaned = raw
+        .replace("(original)", "", ignoreCase = true)
+        .replace(" original", "", ignoreCase = true)
+        .replace(Regex("\\s+"), " ")
+        .trim()
+    return cleaned.ifBlank { "Default" }.let { if (it.length > 26) it.take(25) + "…" else it }
+}
+
+/**
+ * "English · Opus 160k · 8.1 MB" for multi-track uploads, "AAC 128k · 4.2 MB" for the usual video.
+ * The container is intentionally omitted: the resulting container is stated once, on the live
+ * summary line under the row, because it depends on the video/audio pair, not on the audio alone.
+ */
+private fun audioStreamChipLabel(stream: AudioQualityOption, allStreams: List<AudioQualityOption>): String {
+    val multiTrack = allStreams.map { it.trackKey }.distinct().size > 1
+    val trackPart = if (multiTrack) audioTrackChipLabel(stream) + " · " else ""
+    val codecPart = buildString {
+        append(stream.acodec)
+        if (stream.bitrateKbps > 0) append(" ${stream.bitrateKbps}k")
+    }
+    val sizePart = stream.formattedSize.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+    return "$trackPart$codecPart$sizePart"
+}
+
 @Composable
 fun LoadingView(payloadTitle: String) {
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -151,7 +273,7 @@ fun LoadingView(payloadTitle: String) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         CircularProgressIndicator(
-            color = Color(0xFFB58E52),
+            color = accent.color,
             modifier = Modifier.size(40.dp)
         )
         Spacer(modifier = Modifier.height(16.dp))
@@ -159,13 +281,13 @@ fun LoadingView(payloadTitle: String) {
             text = "Resolving Format Options...",
             fontWeight = FontWeight.Bold,
             fontSize = 16.sp,
-            color = Color(0xFF241D1B)
+            color = theme.textPrimary
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = payloadTitle.take(48),
             fontSize = 12.sp,
-            color = Color(0xFF7F7875),
+            color = theme.textSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -178,6 +300,9 @@ fun SuccessContentView(
     onTabSelected: (Boolean) -> Unit,
     onVideoHeightSelected: (Int) -> Unit,
     onVideoVariantSelected: (VideoQualityOption) -> Unit,
+    onMergeAudioStreamSelected: (String?) -> Unit,
+    onBatchVideoCodecSelected: (String) -> Unit,
+    onBatchMergeAudioExtensionSelected: (String) -> Unit,
     onAudioSelected: (String, Int) -> Unit,
     onToggleBatchItem: (String) -> Unit,
     onToggleSelectAll: (Boolean) -> Unit,
@@ -187,6 +312,7 @@ fun SuccessContentView(
     onToggleEmbedChapters: (Boolean) -> Unit,
     onMoveItemUp: (Int) -> Unit,
     onMoveItemDown: (Int) -> Unit,
+    onMoveItem: (Int, Int) -> Unit = { _, _ -> },
     onDownloadFolderSelected: (String) -> Unit,
     onStartDownload: () -> Unit
 ) {
@@ -194,6 +320,12 @@ fun SuccessContentView(
     val isBatch = info is ResolvedMediaInfo.PlaylistOrChannel
     val theme = AppTheme.colors
     val accent = AppTheme.accent
+
+    var draggingItemUrl by remember { mutableStateOf<String?>(null) }
+    var draggingFromIndex by remember { mutableIntStateOf(-1) }
+    var draggingTargetIndex by remember { mutableIntStateOf(-1) }
+    val haptics = LocalHapticFeedback.current
+    val mainScrollState = rememberScrollState()
 
     val selectedPlaylistItems = if (isBatch) {
         state.orderedBatchItems.filter { state.selectedBatchUrls.contains(it.url) }
@@ -215,8 +347,33 @@ fun SuccessContentView(
             if (match != null && match.estimatedTotalBytes > 0L) {
                 return match.formattedSize
             }
+            val estBitrate = when {
+                height >= 2160 -> 15_000_000L
+                height >= 1440 -> 8_000_000L
+                height >= 1080 -> 4_000_000L
+                height >= 720 -> 2_000_000L
+                height >= 480 -> 1_000_000L
+                else -> 500_000L
+            }
+            val estBytes = (estBitrate * totalSelectedDurationSec) / 8L
+            return formatBytes(estBytes)
+        } else {
+            val option = info.videoOptions.firstOrNull { it.height == height }
+            val bitrateBps = if (option != null && option.estimatedTotalBytes > 0L && info.durationSeconds > 0) {
+                (option.estimatedTotalBytes * 8L) / info.durationSeconds
+            } else {
+                when {
+                    height >= 2160 -> 15_000_000L
+                    height >= 1440 -> 8_000_000L
+                    height >= 1080 -> 4_000_000L
+                    height >= 720 -> 2_000_000L
+                    height >= 480 -> 1_000_000L
+                    else -> 500_000L
+                }
+            }
+            val totalBytes = (bitrateBps * totalSelectedDurationSec) / 8L
+            return formatBytes(totalBytes)
         }
-        return ""
     }
 
     fun calculateAudioSizeText(extension: String = "", bitrateKbps: Int): String {
@@ -229,7 +386,23 @@ fun SuccessContentView(
                 return match.formattedSize
             }
         }
-        return ""
+        val targetBitrate = if (bitrateKbps > 0) bitrateKbps else 128
+        val bytesPerSec = (targetBitrate * 1000L) / 8L
+        val totalBytes = bytesPerSec * totalSelectedDurationSec
+        return formatBytes(totalBytes)
+    }
+
+    /**
+     * Size of the finished file for [option]: its video stream plus the audio stream that will
+     * actually be muxed. Progressive formats already contain their audio, so they are used as-is.
+     * This is what makes the number change the moment a different audio track is picked.
+     */
+    fun mergedSizeFor(option: VideoQualityOption?): String {
+        if (option == null) return ""
+        if (option.isMuxed) return option.formattedSize
+        val audioBytes = state.effectiveMergeAudio?.estimatedBytes?.takeIf { it > 0L }
+            ?: option.audioStreamBytes
+        return formatBytes(option.videoOnlyBytes + audioBytes)
     }
 
     Column(
@@ -322,7 +495,7 @@ fun SuccessContentView(
             modifier = Modifier
                 .weight(1f, fill = false)
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(mainScrollState, enabled = draggingItemUrl == null)
         ) {
             // 3. 3-Column Quality Selector Grid with Dynamic Sizes
             if (!state.isAudioOnlyTab) {
@@ -345,7 +518,7 @@ fun SuccessContentView(
                                         ?: info.videoOptions.firstOrNull { it.height == height }
                                 }
                                 val displayOption = if (isSelected) (state.selectedVideoOption ?: defaultOptionForHeight) else defaultOptionForHeight
-                                val sizeLabel = if (isBatch) calculateVideoSizeText(height) else (displayOption?.formattedSize ?: "")
+                                val sizeLabel = if (isBatch) calculateVideoSizeText(height) else mergedSizeFor(displayOption)
                                 val qualityBadge = when (height) {
                                     2160 -> "4K UHD"
                                     1440 -> "2K QHD"
@@ -392,7 +565,7 @@ fun SuccessContentView(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Format / Codec Options",
+                                text = "Video format / codec",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = theme.textSecondary
@@ -419,7 +592,7 @@ fun SuccessContentView(
 
                                 val fpsTag = if (variant.fps >= 50) " 60fps" else ""
                                 val variantTitle = "${variant.vcodec}$fpsTag · ${variant.container.uppercase()}"
-                                val variantSize = variant.formattedSize
+                                val variantSize = mergedSizeFor(variant)
 
                                 Surface(
                                     modifier = Modifier
@@ -464,6 +637,119 @@ fun SuccessContentView(
                             }
                         }
                     }
+                }
+
+                if (!isBatch) {
+                    val selectedFormat = state.selectedVideoOption
+                    if (selectedFormat != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        val selectedSize = mergedSizeFor(selectedFormat)
+                        Text(
+                            text = "Selected: ${selectedFormat.vcodec} · ${selectedFormat.container.uppercase()} · " +
+                                "${selectedFormat.fps}fps" +
+                                selectedSize.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                            fontSize = 10.sp,
+                            color = theme.textMuted
+                        )
+                    }
+
+                    // Audio stream selector: every concrete stream (track + codec + bitrate), so any
+                    // video can be paired with any audio. Progressive formats carry their own audio.
+                    val audioStreams = remember(info.audioOptions) {
+                        info.audioOptions
+                            .distinctBy { it.streamKey }
+                            .sortedWith(
+                                compareByDescending<AudioQualityOption> { it.isOriginalOrDefault }
+                                    .thenByDescending { it.extension.equals("m4a", ignoreCase = true) }
+                                    .thenByDescending { it.bitrateKbps }
+                            )
+                    }
+                    val videoIsMuxed = state.selectedVideoOption?.isMuxed == true
+
+                    if (videoIsMuxed) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Audio is already inside this format. Pick a DASH quality to choose a separate audio track.",
+                            fontSize = 10.sp,
+                            color = theme.textMuted
+                        )
+                    } else if (audioStreams.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        if (audioStreams.size == 1) {
+                            val only = audioStreams.first()
+                            val detail = buildString {
+                                append(only.acodec)
+                                if (only.bitrateKbps > 0) append(" ${only.bitrateKbps}k")
+                                only.formattedSize.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                            }
+                            Text(
+                                text = "Audio: $detail (included in this video)",
+                                fontSize = 11.sp,
+                                color = theme.textSecondary
+                            )
+                        } else {
+                            SelectionChipRow(
+                                label = "Audio track (merged)",
+                                options = listOf(SelectionChip(null, "Auto (best)")) +
+                                    audioStreams.map { stream ->
+                                        SelectionChip(
+                                            key = stream.streamKey,
+                                            title = audioStreamChipLabel(stream, audioStreams)
+                                        )
+                                    },
+                                selectedKey = state.selectedMergeAudioStreamKey,
+                                accentColor = accent.color,
+                                onSelected = onMergeAudioStreamSelected
+                            )
+                        }
+
+                        // Live result line: proves the pick was applied and states the real final size.
+                        val effectiveAudio = state.effectiveMergeAudio
+                        if (effectiveAudio != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            val isAuto = state.selectedMergeAudioStreamKey == null
+                            val audioLabel = audioStreamChipLabel(effectiveAudio, audioStreams)
+                                .let { if (isAuto) "$it (auto)" else it }
+                            val videoBytes = state.selectedVideoOption?.videoOnlyBytes ?: 0L
+                            val totalBytes = state.mergedSizeBytes
+                            Text(
+                                text = buildString {
+                                    if (videoBytes > 0L) append("Video ${formatBytes(videoBytes)} + ")
+                                    append(audioLabel)
+                                    if (totalBytes > 0L) append(" = ${formatBytes(totalBytes)}")
+                                    append(" · saved as ${state.effectiveOutputContainer.uppercase()}")
+                                },
+                                fontSize = 9.5.sp,
+                                color = theme.textMuted
+                            )
+                        }
+                    }
+                } else {
+                    // Playlist mode never resolves per-item variants, so expose honest
+                    // preference chips instead of fabricated per-video codec options.
+                    Spacer(modifier = Modifier.height(12.dp))
+                    SelectionChipRow(
+                        label = "Video codec preference",
+                        options = listOf("Auto", "H.264", "VP9", "AV1").map { SelectionChip(it, it) },
+                        selectedKey = state.batchVideoCodec,
+                        accentColor = accent.color,
+                        onSelected = { codec -> codec?.let(onBatchVideoCodecSelected) }
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    SelectionChipRow(
+                        label = "Merge audio preference",
+                        options = listOf("Auto", "M4A", "Opus").map { SelectionChip(it, it) },
+                        selectedKey = state.batchMergeAudioExtension,
+                        accentColor = accent.color,
+                        onSelected = { ext -> ext?.let(onBatchMergeAudioExtensionSelected) }
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Auto keeps AAC in MP4 and Opus in WebM. Picking the other codec saves that playlist as MKV.",
+                        fontSize = 9.5.sp,
+                        color = theme.textMuted
+                    )
                 }
             } else {
             val distinctAudios = remember(info.audioOptions) {
@@ -535,120 +821,261 @@ fun SuccessContentView(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Seamless Playlist List with Unified Circular Selection Pill & Drag Handle
+            // Seamless Playlist List with Stable Unique Key and Continuous Gesture Detection
+            val density = LocalDensity.current
+            val fallbackSlotHeightPx = with(density) { 40.dp.toPx() }
+            val rowSpacingPx = with(density) { 2.dp.toPx() }
+            val listVerticalPaddingPx = with(density) { 4.dp.toPx() }
+            val listHorizontalPaddingPx = with(density) { 6.dp.toPx() }
+            var listRowHeightPx by remember { mutableFloatStateOf(fallbackSlotHeightPx - rowSpacingPx) }
+            var listSlotHeightPx by remember { mutableFloatStateOf(fallbackSlotHeightPx) }
+
+            // Animated Y of the translucent drop placeholder (the slot the dragged video will land in).
+            val animatedPlaceholderY by animateFloatAsState(
+                targetValue = listVerticalPaddingPx + draggingTargetIndex.coerceAtLeast(0) * listSlotHeightPx,
+                animationSpec = tween(140),
+                label = "dropSlotOffset"
+            )
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(theme.pillTrackBg, RoundedCornerShape(14.dp))
+                    .drawBehind {
+                        // Draw the destination slot behind the rows so the user always sees where the drop lands.
+                        if (draggingItemUrl != null && draggingTargetIndex >= 0 && listRowHeightPx > 0f) {
+                            val corner = CornerRadius(8.dp.toPx())
+                            val left = listHorizontalPaddingPx
+                            val slotWidth = size.width - listHorizontalPaddingPx * 2f
+                            if (slotWidth > 0f) {
+                                drawRoundRect(
+                                    color = accent.color.copy(alpha = 0.10f),
+                                    topLeft = Offset(left, animatedPlaceholderY),
+                                    size = Size(slotWidth, listRowHeightPx),
+                                    cornerRadius = corner
+                                )
+                                drawRoundRect(
+                                    color = accent.color.copy(alpha = 0.75f),
+                                    topLeft = Offset(left, animatedPlaceholderY),
+                                    size = Size(slotWidth, listRowHeightPx),
+                                    cornerRadius = corner,
+                                    style = Stroke(width = 1.5.dp.toPx())
+                                )
+                            }
+                        }
+                    }
                     .padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 state.orderedBatchItems.forEachIndexed { index, item ->
-                    val checked = state.selectedBatchUrls.contains(item.url)
-                    var dragAccumulator by remember { mutableFloatStateOf(0f) }
+                    key(item.url) {
+                        val checked = state.selectedBatchUrls.contains(item.url)
+                        val isDragging = draggingItemUrl == item.url
+                        // rememberUpdatedState keeps the gesture closure from capturing a stale index
+                        // after rows are reordered, so every subsequent drag targets the correct row.
+                        val currentIndex by rememberUpdatedState(index)
+                        val currentCount by rememberUpdatedState(state.orderedBatchItems.size)
+                        var dragOffsetY by remember { mutableFloatStateOf(0f) }
+                        var rowSlotHeightPx by remember { mutableFloatStateOf(fallbackSlotHeightPx) }
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onToggleBatchItem(item.url) }
-                            .padding(vertical = 4.dp, horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Unified Circle Selection Pill
-                        Box(
+                        // Rows between the drag origin and the live drop target slide one slot over
+                        // to physically open a gap where the dragged video will land.
+                        val rowShiftTarget = if (draggingItemUrl != null && !isDragging && draggingFromIndex >= 0) {
+                            when {
+                                draggingFromIndex < draggingTargetIndex && index > draggingFromIndex && index <= draggingTargetIndex -> -rowSlotHeightPx
+                                draggingTargetIndex < draggingFromIndex && index >= draggingTargetIndex && index < draggingFromIndex -> rowSlotHeightPx
+                                else -> 0f
+                            }
+                        } else 0f
+                        val animatedRowShift by animateFloatAsState(
+                            targetValue = rowShiftTarget,
+                            animationSpec = tween(140),
+                            label = "rowShift"
+                        )
+
+                        Row(
                             modifier = Modifier
-                                .size(26.dp)
-                                .clip(CircleShape)
-                                .background(if (checked) accent.color else Color.Transparent)
-                                .then(
-                                    if (!checked) Modifier.border(BorderStroke(1.5.dp, theme.dividerColor), CircleShape)
-                                    else Modifier
-                                ),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .onSizeChanged { size ->
+                                    if (size.height > 0) {
+                                        rowSlotHeightPx = size.height.toFloat() + rowSpacingPx
+                                        listRowHeightPx = size.height.toFloat()
+                                        listSlotHeightPx = size.height.toFloat() + rowSpacingPx
+                                    }
+                                }
+                                .graphicsLayer {
+                                    translationY = if (isDragging) dragOffsetY else animatedRowShift
+                                    shadowElevation = if (isDragging) 8f else 0f
+                                }
+                                .background(
+                                    if (isDragging) theme.pillBg.copy(alpha = 0.95f) else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable { onToggleBatchItem(item.url) }
+                                .padding(vertical = 4.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (state.addNumberPrefix) {
+                            // Unified Circle Selection Pill
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(if (checked) accent.color else Color.Transparent)
+                                    .then(
+                                        if (!checked) Modifier.border(BorderStroke(1.5.dp, theme.dividerColor), CircleShape)
+                                        else Modifier
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
                                 Text(
                                     text = String.format("%02d", index + 1),
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = if (checked) accent.text else theme.textSecondary
                                 )
-                            } else {
-                                if (checked) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = "Selected",
-                                        tint = accent.text,
-                                        modifier = Modifier.size(14.dp)
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.title,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = theme.textPrimary
+                                )
+                                if (item.durationSeconds > 0) {
+                                    val mins = item.durationSeconds / 60
+                                    val secs = item.durationSeconds % 60
+                                    Text(
+                                        text = String.format("%d:%02d", mins, secs),
+                                        fontSize = 10.sp,
+                                        color = theme.textSecondary
                                     )
                                 }
                             }
-                        }
 
-                        Spacer(modifier = Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
 
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = item.title,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = theme.textPrimary
-                            )
-                            if (item.durationSeconds > 0) {
-                                val mins = item.durationSeconds / 60
-                                val secs = item.durationSeconds % 60
-                                Text(
-                                    text = String.format("%d:%02d", mins, secs),
-                                    fontSize = 10.sp,
-                                    color = theme.textSecondary
-                                )
+                            // Micro Up/Down Arrows for One-Tap Reordering
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (index > 0) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .clickable { onMoveItemUp(index) },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.KeyboardArrowUp,
+                                            contentDescription = "Move Up",
+                                            tint = theme.textSecondary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                                if (index < state.orderedBatchItems.size - 1) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .clickable { onMoveItemDown(index) },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Move Down",
+                                            tint = theme.textSecondary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
                             }
-                        }
 
-                        Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(2.dp))
 
-                        // Reorder Drag Handle (Replaces Up / Down buttons)
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .pointerInput(index, state.orderedBatchItems.size) {
-                                    detectVerticalDragGestures(
-                                        onDragStart = { dragAccumulator = 0f },
-                                        onDragEnd = { dragAccumulator = 0f },
-                                        onDragCancel = { dragAccumulator = 0f },
-                                        onVerticalDrag = { change, dragAmount ->
-                                            change.consume()
-                                            dragAccumulator += dragAmount
-                                            if (dragAccumulator > 36f && index < state.orderedBatchItems.size - 1) {
-                                                onMoveItemDown(index)
-                                                dragAccumulator = 0f
-                                            } else if (dragAccumulator < -36f && index > 0) {
-                                                onMoveItemUp(index)
-                                                dragAccumulator = 0f
+                            // Reorder Drag Handle (Keyed strictly to item.url so gestures never cancel mid-drag)
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .pointerInput(item.url) {
+                                        detectVerticalDragGestures(
+                                            onDragStart = {
+                                                draggingItemUrl = item.url
+                                                draggingFromIndex = currentIndex
+                                                draggingTargetIndex = currentIndex
+                                                dragOffsetY = 0f
+                                            },
+                                            onDragEnd = {
+                                                val targetIndex = draggingTargetIndex
+                                                if (targetIndex >= 0 && targetIndex != currentIndex) {
+                                                    onMoveItem(currentIndex, targetIndex)
+                                                }
+                                                dragOffsetY = 0f
+                                                draggingItemUrl = null
+                                                draggingFromIndex = -1
+                                                draggingTargetIndex = -1
+                                            },
+                                            onDragCancel = {
+                                                dragOffsetY = 0f
+                                                draggingItemUrl = null
+                                                draggingFromIndex = -1
+                                                draggingTargetIndex = -1
+                                            },
+                                            onVerticalDrag = { change, dragAmount ->
+                                                change.consume()
+                                                val slot = rowSlotHeightPx.coerceAtLeast(1f)
+                                                val maxUp = -currentIndex * slot
+                                                val maxDown = ((currentCount - 1 - currentIndex).coerceAtLeast(0)) * slot
+                                                dragOffsetY = (dragOffsetY + dragAmount).coerceIn(maxUp, maxDown)
+
+                                                // Track the live drop target so the placeholder and the row gap follow the finger.
+                                                val newTarget = (currentIndex + (dragOffsetY / slot).roundToInt())
+                                                    .coerceIn(0, (currentCount - 1).coerceAtLeast(0))
+                                                if (newTarget != draggingTargetIndex) {
+                                                    draggingTargetIndex = newTarget
+                                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                }
                                             }
-                                        }
-                                    )
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                                        )
+                                    },
+                                contentAlignment = Alignment.Center
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(16.dp)
-                                        .height(2.dp)
-                                        .background(theme.textSecondary.copy(alpha = 0.5f), RoundedCornerShape(1.dp))
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .width(16.dp)
-                                        .height(2.dp)
-                                        .background(theme.textSecondary.copy(alpha = 0.5f), RoundedCornerShape(1.dp))
-                                )
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(16.dp)
+                                            .height(2.dp)
+                                            .background(
+                                                if (isDragging) accent.color else theme.textSecondary.copy(alpha = 0.5f),
+                                                RoundedCornerShape(1.dp)
+                                            )
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .width(16.dp)
+                                            .height(2.dp)
+                                            .background(
+                                                if (isDragging) accent.color else theme.textSecondary.copy(alpha = 0.5f),
+                                                RoundedCornerShape(1.dp)
+                                            )
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .width(16.dp)
+                                            .height(2.dp)
+                                            .background(
+                                                if (isDragging) accent.color else theme.textSecondary.copy(alpha = 0.5f),
+                                                RoundedCornerShape(1.dp)
+                                            )
+                                    )
+                                }
                             }
                         }
                     }
@@ -804,9 +1231,9 @@ fun SuccessContentView(
                     .height(48.dp)
             ) {
                 Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp), tint = accent.text)
-                Spacer(modifier = Modifier.width(8.dp))
+                val sizeSuffix = if (totalSizeText.isNotBlank()) " • $totalSizeText" else ""
                 Text(
-                    text = if (canQueue) "Download Playlist (${state.selectedBatchUrls.size} Videos • $totalSizeText)" else "Select at least 1 video",
+                    text = if (canQueue) "Download Playlist (${state.selectedBatchUrls.size} Videos$sizeSuffix)" else "Select at least 1 video",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     color = accent.text
@@ -814,7 +1241,8 @@ fun SuccessContentView(
             }
         } else {
             val ctaSize = if (!state.isAudioOnlyTab) {
-                state.selectedVideoOption?.formattedSize?.takeIf { it.isNotBlank() } ?: calculateVideoSizeText(state.selectedVideoHeight)
+                mergedSizeFor(state.selectedVideoOption).takeIf { it.isNotBlank() }
+                    ?: calculateVideoSizeText(state.selectedVideoHeight)
             } else {
                 calculateAudioSizeText(state.selectedAudioExtension, state.selectedAudioBitrateKbps)
             }
@@ -898,7 +1326,7 @@ fun AdvancedOptionSwitchRow(
                 modifier = Modifier
                     .size(18.dp)
                     .clip(CircleShape)
-                    .background(Color.White)
+                    .background(if (checked) AppTheme.accent.text else theme.textSecondary)
             )
         }
     }
@@ -951,22 +1379,27 @@ fun FloatingQualityGridCard(
 
 @Composable
 fun ErrorView(message: String, onDismiss: () -> Unit) {
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Unable to resolve formats", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFFBA1A1A))
+        Text("Unable to resolve formats", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = theme.errorRed)
         Spacer(modifier = Modifier.height(8.dp))
-        Text(message, fontSize = 12.sp, color = Color(0xFF5F5B59))
+        Text(message, fontSize = 12.sp, color = theme.textSecondary)
         Spacer(modifier = Modifier.height(16.dp))
         Button(
             onClick = onDismiss,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB58E52)),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = accent.color,
+                contentColor = accent.text
+            ),
             shape = RoundedCornerShape(12.dp)
         ) {
-            Text("Close", color = Color.White)
+            Text("Close", color = accent.text)
         }
     }
 }

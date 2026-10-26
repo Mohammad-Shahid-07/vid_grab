@@ -75,6 +75,8 @@ fun SettingsBottomSheet(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val theme = com.vidgrab.app.ui.theme.AppTheme.colors
+    val accent = com.vidgrab.app.ui.theme.AppTheme.accent
 
     val updateState by YtDlpUpdater.updateState.collectAsState()
     val isAdBlockEnabled by AdBlockEngine.isAdBlockEnabled.collectAsState()
@@ -98,7 +100,8 @@ fun SettingsBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color(0xFFFAF8F5),
+        containerColor = theme.sheetBg,
+        contentColor = theme.textPrimary,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     ) {
         Column(
@@ -119,21 +122,21 @@ fun SettingsBottomSheet(
                     Box(
                         modifier = Modifier
                             .size(34.dp)
-                            .background(Color(0xFFE5A93C).copy(alpha = 0.12f), CircleShape),
+                            .background(accent.color.copy(alpha = 0.12f), CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, tint = Color(0xFFE5A93C), modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Tune, contentDescription = null, tint = accent.color, modifier = Modifier.size(20.dp))
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = "Settings & Engine Control",
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
-                        color = Color(0xFF241D1B)
+                        color = theme.textPrimary
                     )
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF7F7875))
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = theme.textSecondary)
                 }
             }
 
@@ -154,19 +157,19 @@ fun SettingsBottomSheet(
                             Text(
                                 text = "Installed Version",
                                 fontSize = 11.sp,
-                                color = Color(0xFF7F7875)
+                                color = theme.textSecondary
                             )
                             Text(
                                 text = updateState.version ?: "Checking...",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 fontFamily = FontFamily.Monospace,
-                                color = Color(0xFF241D1B)
+                                color = theme.textPrimary
                             )
                         }
 
                         // Status Badge
-                        val badgeColor = if (updateState.isUpdating) Color(0xFFE5A93C) else Color(0xFF2C6954)
+                        val badgeColor = if (updateState.isUpdating) accent.color else theme.successGreen
                         Text(
                             text = if (updateState.isUpdating) "UPDATING" else "READY",
                             fontSize = 10.sp,
@@ -183,7 +186,7 @@ fun SettingsBottomSheet(
                     Text(
                         text = updateState.statusMessage,
                         fontSize = 11.sp,
-                        color = Color(0xFF7F7875)
+                        color = theme.textSecondary
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -196,15 +199,15 @@ fun SettingsBottomSheet(
                         },
                         enabled = !updateState.isUpdating,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFE5A93C),
-                            contentColor = Color.White
+                            containerColor = accent.color,
+                            contentColor = accent.text
                         ),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         if (updateState.isUpdating) {
                             CircularProgressIndicator(
-                                color = Color.White,
+                                color = accent.text,
                                 strokeWidth = 2.dp,
                                 modifier = Modifier.size(16.dp)
                             )
@@ -238,20 +241,20 @@ fun SettingsBottomSheet(
                                 text = "Brave AdBlock & Sponsor Skip",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 13.sp,
-                                color = Color(0xFF241D1B)
+                                color = theme.textPrimary
                             )
                             Text(
                                 text = "Blocks ads, tracking endpoints, and auto-skips pre-rolls",
                                 fontSize = 11.sp,
-                                color = Color(0xFF7F7875)
+                                color = theme.textSecondary
                             )
                         }
                         Switch(
                             checked = isAdBlockEnabled,
                             onCheckedChange = { AdBlockEngine.setAdBlockEnabled(context, it) },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = Color(0xFFE5A93C)
+                                checkedThumbColor = accent.text,
+                                checkedTrackColor = accent.color
                             )
                         )
                     }
@@ -269,20 +272,20 @@ fun SettingsBottomSheet(
                                 text = "Background Audio Play",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 13.sp,
-                                color = Color(0xFF241D1B)
+                                color = theme.textPrimary
                             )
                             Text(
                                 text = "Keeps audio playing with screen locked or app minimized",
                                 fontSize = 11.sp,
-                                color = Color(0xFF7F7875)
+                                color = theme.textSecondary
                             )
                         }
                         Switch(
                             checked = isBackgroundPlayEnabled,
                             onCheckedChange = { AdBlockEngine.setBackgroundPlayEnabled(context, it) },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = Color(0xFFE5A93C)
+                                checkedThumbColor = accent.text,
+                                checkedTrackColor = accent.color
                             )
                         )
                     }
@@ -308,12 +311,12 @@ fun SettingsBottomSheet(
                                 text = "Concurrent Downloads",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 13.sp,
-                                color = Color(0xFF241D1B)
+                                color = theme.textPrimary
                             )
                             Text(
                                 text = "Simultaneous downloads in parallel (1 to 5)",
                                 fontSize = 11.sp,
-                                color = Color(0xFF7F7875)
+                                color = theme.textSecondary
                             )
                         }
                         Row(
@@ -326,7 +329,7 @@ fun SettingsBottomSheet(
                                     modifier = Modifier
                                         .size(28.dp)
                                         .clip(CircleShape)
-                                        .background(if (isSelected) Color(0xFFE5A93C) else Color(0xFFF3ECE7))
+                                        .background(if (isSelected) accent.color else theme.pillTrackBg)
                                         .clickable { AdBlockEngine.setMaxConcurrentDownloads(context, count) },
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -334,7 +337,7 @@ fun SettingsBottomSheet(
                                         text = "$count",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isSelected) Color.White else Color(0xFF5F5B59)
+                                        color = if (isSelected) accent.text else theme.textSecondary
                                     )
                                 }
                             }
@@ -354,12 +357,12 @@ fun SettingsBottomSheet(
                                 text = "Default Aria2c Multi-Stream",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 13.sp,
-                                color = Color(0xFF241D1B)
+                                color = theme.textPrimary
                             )
                             Text(
                                 text = "Uses 4 parallel connection chunks for new queue downloads",
                                 fontSize = 11.sp,
-                                color = Color(0xFF7F7875)
+                                color = theme.textSecondary
                             )
                         }
                         Switch(
@@ -369,8 +372,8 @@ fun SettingsBottomSheet(
                                 prefs.edit().putBoolean("default_use_aria2c", enabled).apply()
                             },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = Color(0xFFE5A93C)
+                                checkedThumbColor = accent.text,
+                                checkedTrackColor = accent.color
                             )
                         )
                     }
@@ -388,12 +391,12 @@ fun SettingsBottomSheet(
                                 text = "Background Battery Exemption",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 13.sp,
-                                color = Color(0xFF241D1B)
+                                color = theme.textPrimary
                             )
                             Text(
                                 text = if (isBatteryIgnoring) "Battery optimization is disabled (Safe)" else "App may be suspended when screen is off",
                                 fontSize = 11.sp,
-                                color = if (isBatteryIgnoring) Color(0xFF2C6954) else Color(0xFFE5A93C)
+                                color = if (isBatteryIgnoring) theme.successGreen else accent.color
                             )
                         }
 
@@ -411,13 +414,13 @@ fun SettingsBottomSheet(
                                 },
                                 shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Allow", fontSize = 12.sp, color = Color(0xFFE5A93C))
+                                Text("Allow", fontSize = 12.sp, color = accent.color)
                             }
                         } else {
                             Icon(
                                 imageVector = Icons.Default.BatteryChargingFull,
                                 contentDescription = null,
-                                tint = Color(0xFF2C6954),
+                                tint = theme.successGreen,
                                 modifier = Modifier.size(22.dp)
                             )
                         }

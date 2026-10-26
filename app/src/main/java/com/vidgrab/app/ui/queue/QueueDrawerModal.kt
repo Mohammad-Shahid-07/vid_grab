@@ -66,6 +66,7 @@ import com.vidgrab.app.core.database.DownloadTaskEntity
 import com.vidgrab.app.core.database.TaskStatus
 import com.vidgrab.app.core.extractor.formatBytes
 import com.vidgrab.app.core.queue.QueueRepository
+import com.vidgrab.app.ui.theme.AppTheme
 import timber.log.Timber
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -79,6 +80,8 @@ fun QueueDrawerModal(
     val completedTasks by queueRepository.completedTasks.collectAsState(initial = emptyList())
     var selectedTab by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
 
     val failedTasks = remember(allTasks) { allTasks.filter { it.status == TaskStatus.FAILED } }
     val pausedTasks = remember(allTasks) { allTasks.filter { it.status == TaskStatus.PAUSED } }
@@ -89,7 +92,8 @@ fun QueueDrawerModal(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color(0xFFFAF8F5),
+        containerColor = theme.sheetBg,
+        contentColor = theme.textPrimary,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     ) {
         Column(
@@ -109,10 +113,10 @@ fun QueueDrawerModal(
                     text = "Downloads",
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
-                    color = Color(0xFF241D1B)
+                    color = theme.textPrimary
                 )
                 IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF7F7875), modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = theme.textSecondary, modifier = Modifier.size(20.dp))
                 }
             }
 
@@ -126,33 +130,33 @@ fun QueueDrawerModal(
             ) {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = Color.White,
-                    border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+                    color = theme.cardBg,
+                    border = BorderStroke(1.dp, theme.dividerColor),
                     modifier = Modifier.clickable { queueRepository.pauseAll() }
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Pause, contentDescription = null, tint = Color(0xFF7F7875), modifier = Modifier.size(13.dp))
+                        Icon(Icons.Default.Pause, contentDescription = null, tint = theme.textSecondary, modifier = Modifier.size(13.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Pause All", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF241D1B))
+                        Text("Pause All", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = theme.textPrimary)
                     }
                 }
 
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = Color.White,
-                    border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+                    color = theme.cardBg,
+                    border = BorderStroke(1.dp, theme.dividerColor),
                     modifier = Modifier.clickable { queueRepository.resumeAll() }
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFFE5A93C), modifier = Modifier.size(13.dp))
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = accent.color, modifier = Modifier.size(13.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Resume All", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF241D1B))
+                        Text("Resume All", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = theme.textPrimary)
                     }
                 }
 
@@ -161,7 +165,7 @@ fun QueueDrawerModal(
                 Text(
                     text = "${allTasks.size} total",
                     fontSize = 11.sp,
-                    color = Color(0xFF7F7875),
+                    color = theme.textSecondary,
                     fontWeight = FontWeight.Medium
                 )
             }
@@ -171,12 +175,12 @@ fun QueueDrawerModal(
             // 3-Segmented Tabs: Downloading, Completed, Paused
             TabRow(
                 selectedTabIndex = selectedTab,
-                containerColor = Color(0xFFF3ECE7),
-                contentColor = Color(0xFFE5A93C),
+                containerColor = theme.pillTrackBg,
+                contentColor = accent.color,
                 indicator = { tabPositions ->
                     TabRowDefaults.SecondaryIndicator(
                         modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                        color = Color(0xFFE5A93C),
+                        color = accent.color,
                         height = 3.dp
                     )
                 },
@@ -291,10 +295,12 @@ fun ActiveTaskRow(
     onResume: () -> Unit,
     onCancel: () -> Unit
 ) {
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
     Surface(
-        color = Color.White,
+        color = theme.cardBg,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+        border = BorderStroke(1.dp, theme.dividerColor),
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
@@ -336,10 +342,10 @@ fun ActiveTaskRow(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val statusColor = when (task.status) {
-                            TaskStatus.DOWNLOADING -> Color(0xFFE5A93C)
-                            TaskStatus.MERGING -> Color(0xFF2C6954)
-                            TaskStatus.PAUSED -> Color(0xFF8C827A)
-                            else -> Color(0xFF7F7875)
+                            TaskStatus.DOWNLOADING -> accent.color
+                            TaskStatus.MERGING -> theme.successGreen
+                            TaskStatus.PAUSED -> theme.textMuted
+                            else -> theme.textSecondary
                         }
 
                         Text(
@@ -364,7 +370,7 @@ fun ActiveTaskRow(
                             text = "${task.progressPercent.toInt()}%",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFE5A93C)
+                            color = accent.color
                         )
                     }
 
@@ -376,7 +382,7 @@ fun ActiveTaskRow(
                         fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        color = Color(0xFF241D1B)
+                        color = theme.textPrimary
                     )
                 }
 
@@ -385,15 +391,15 @@ fun ActiveTaskRow(
                 // Action Buttons: Pause / Resume, Cancel
                 if (task.status == TaskStatus.DOWNLOADING || task.status == TaskStatus.MERGING) {
                     IconButton(onClick = onPause, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Pause, contentDescription = "Pause", tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Pause, contentDescription = "Pause", tint = accent.color, modifier = Modifier.size(18.dp))
                     }
                 } else if (task.status == TaskStatus.PAUSED) {
                     IconButton(onClick = onResume, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = accent.color, modifier = Modifier.size(18.dp))
                     }
                 }
                 IconButton(onClick = onCancel, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Cancel", tint = Color(0xFF7F7875), modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Close, contentDescription = "Cancel", tint = theme.textSecondary, modifier = Modifier.size(16.dp))
                 }
             }
 
@@ -406,8 +412,8 @@ fun ActiveTaskRow(
                     .fillMaxWidth()
                     .height(4.dp)
                     .clip(RoundedCornerShape(2.dp)),
-                color = Color(0xFFE5A93C),
-                trackColor = Color(0xFFF3ECE7)
+                color = accent.color,
+                trackColor = theme.pillTrackBg
             )
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -427,7 +433,7 @@ fun ActiveTaskRow(
                     text = "$sizeText • ${task.speedText.ifBlank { "Downloading..." }}",
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Color(0xFF5F5B59),
+                    color = theme.textSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
@@ -435,7 +441,7 @@ fun ActiveTaskRow(
                 Text(
                     text = if (task.etaSeconds > 0) "ETA ${task.etaSeconds}s" else "",
                     fontSize = 10.sp,
-                    color = Color(0xFF7F7875)
+                    color = theme.textSecondary
                 )
             }
         }
@@ -448,10 +454,12 @@ fun CompletedTaskRow(
     onOpen: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
     Surface(
-        color = Color.White,
+        color = theme.cardBg,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Color(0xFFEFEAE2)),
+        border = BorderStroke(1.dp, theme.dividerColor),
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
@@ -498,39 +506,39 @@ fun CompletedTaskRow(
                     fontSize = 12.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = Color(0xFF241D1B)
+                    color = theme.textPrimary
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
-                            .background(Color(0xFF2C6954).copy(alpha = 0.12f), RoundedCornerShape(3.dp))
+                            .background(theme.successGreen.copy(alpha = 0.12f), RoundedCornerShape(3.dp))
                             .padding(horizontal = 4.dp, vertical = 1.dp)
                     ) {
                         Text(
                             text = "COMPLETED",
                             fontSize = 8.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF2C6954)
+                            color = theme.successGreen
                         )
                     }
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "${task.outputExt.uppercase()} • ${formatBytes(task.totalBytes)}",
                         fontSize = 10.sp,
-                        color = Color(0xFF7F7875)
+                        color = theme.textSecondary
                     )
                 }
             }
 
             // Open Action
             IconButton(onClick = onOpen, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.FileOpen, contentDescription = "Open", tint = Color(0xFFE5A93C), modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.FileOpen, contentDescription = "Open", tint = accent.color, modifier = Modifier.size(18.dp))
             }
 
             // Delete Action
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFF7F7875), modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = theme.textSecondary, modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -538,13 +546,14 @@ fun CompletedTaskRow(
 
 @Composable
 fun EmptyQueuePlaceholder(text: String) {
+    val theme = AppTheme.colors
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 40.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(text, fontSize = 13.sp, color = Color(0xFF7F7875))
+        Text(text, fontSize = 13.sp, color = theme.textSecondary)
     }
 }
 
@@ -568,10 +577,11 @@ fun FailedTaskCard(
     onRetry: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val theme = AppTheme.colors
     Surface(
-        color = Color(0xFFFFF1F0),
+        color = theme.errorRed.copy(alpha = 0.10f),
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, Color(0xFFFFCDD2)),
+        border = BorderStroke(1.dp, theme.errorRed.copy(alpha = 0.35f)),
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
@@ -582,9 +592,9 @@ fun FailedTaskCard(
                     text = "FAILED",
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFFBA1A1A),
+                    color = theme.errorRed,
                     modifier = Modifier
-                        .background(Color(0xFFBA1A1A).copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                        .background(theme.errorRed.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 )
 
@@ -593,7 +603,7 @@ fun FailedTaskCard(
                 Text(
                     text = "${task.outputExt.uppercase()}${if (task.targetHeight != null) " • ${task.targetHeight}p" else ""}",
                     fontSize = 10.sp,
-                    color = Color(0xFF7F7875)
+                    color = theme.textSecondary
                 )
 
                 Spacer(modifier = Modifier.weight(1f))
@@ -603,7 +613,7 @@ fun FailedTaskCard(
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = "Retry",
-                        tint = Color(0xFFBA1A1A),
+                        tint = theme.errorRed,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -615,7 +625,7 @@ fun FailedTaskCard(
                     Icon(
                         imageVector = Icons.Default.Delete,
                         contentDescription = "Delete",
-                        tint = Color(0xFF7F7875),
+                        tint = theme.textSecondary,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -629,7 +639,7 @@ fun FailedTaskCard(
                 fontSize = 13.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = Color(0xFF241D1B)
+                color = theme.textPrimary
             )
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -638,12 +648,12 @@ fun FailedTaskCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF241D1B), RoundedCornerShape(8.dp))
+                    .background(theme.pillTrackBg, RoundedCornerShape(8.dp))
                     .padding(10.dp)
             ) {
                 Text(
                     text = errorText,
-                    color = Color(0xFFFF8A80),
+                    color = theme.errorRed,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     maxLines = 4,

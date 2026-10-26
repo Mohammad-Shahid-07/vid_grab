@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import com.vidgrab.app.ui.browser.YouTubeBrowserScreen
+import com.vidgrab.app.ui.theme.AppTheme
 import com.vidgrab.app.ui.theme.ThemeManager
 import com.vidgrab.app.ui.theme.VidGrabTheme
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,30 +58,32 @@ class MainActivity : ComponentActivity() {
                     insetsController.isAppearanceLightNavigationBars = !currentTheme.isDark
                 }
 
-                MaterialTheme {
-                    val engineState by App.instance.engineState.collectAsState()
-                    val sharedUrl by sharedUrlState.collectAsState()
+                val engineState by App.instance.engineState.collectAsState()
+                val sharedUrl by sharedUrlState.collectAsState()
 
-                    when (engineState) {
-                        is EngineInitState.Ready -> {
-                            // Core engines initialized; render embedded YouTube browser
-                            YouTubeBrowserScreen(
-                                initialSharedUrl = sharedUrl,
-                                onSharedUrlConsumed = { sharedUrlState.value = null }
-                            )
-                        }
-                        else -> {
-                            // Splash / Loading / Error screen during cold startup
-                            Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(innerPadding)
-                                        .background(currentTheme.phoneBg),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    EngineStatusScreen(engineState = engineState)
-                                }
+                when (engineState) {
+                    is EngineInitState.Ready -> {
+                        // Core engines initialized; render embedded YouTube browser
+                        YouTubeBrowserScreen(
+                            initialSharedUrl = sharedUrl,
+                            onSharedUrlConsumed = { sharedUrlState.value = null }
+                        )
+                    }
+                    else -> {
+                        // Splash / Loading / Error screen during cold startup
+                        Scaffold(
+                            modifier = Modifier.fillMaxSize(),
+                            containerColor = currentTheme.phoneBg,
+                            contentColor = currentTheme.textPrimary
+                        ) { innerPadding ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(innerPadding)
+                                    .background(currentTheme.phoneBg),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                EngineStatusScreen(engineState = engineState)
                             }
                         }
                     }
@@ -118,6 +120,8 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun EngineStatusScreen(engineState: EngineInitState) {
+    val theme = AppTheme.colors
+    val accent = AppTheme.accent
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -127,12 +131,12 @@ fun EngineStatusScreen(engineState: EngineInitState) {
             text = "YouDrop",
             fontSize = 32.sp,
             fontWeight = FontWeight.Bold,
-            color = Color(0xFFE5A93C)
+            color = accent.color
         )
         Text(
             text = "2026 Dual-Engine Extraction Core",
             fontSize = 14.sp,
-            color = Color(0xFF5F5B59)
+            color = theme.textSecondary
         )
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -141,20 +145,20 @@ fun EngineStatusScreen(engineState: EngineInitState) {
             is EngineInitState.Uninitialized, EngineInitState.Initializing -> {
                 CircularProgressIndicator(
                     modifier = Modifier.size(48.dp),
-                    color = Color(0xFFE5A93C)
+                    color = accent.color
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "Unpacking native engines & QuickJS runtime...",
                     fontSize = 13.sp,
-                    color = Color(0xFF7F7875)
+                    color = theme.textMuted
                 )
             }
             is EngineInitState.Ready -> {
                 Text(
                     text = "✓ Core Engines Ready",
                     fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF2C6954),
+                    color = theme.successGreen,
                     fontSize = 18.sp
                 )
             }
@@ -162,14 +166,14 @@ fun EngineStatusScreen(engineState: EngineInitState) {
                 Text(
                     text = "⚠ Engine Initialization Failed",
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFFBA1A1A),
+                    color = theme.errorRed,
                     fontSize = 16.sp
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = state.message,
                     fontSize = 12.sp,
-                    color = Color(0xFF5F5B59)
+                    color = theme.textSecondary
                 )
             }
         }

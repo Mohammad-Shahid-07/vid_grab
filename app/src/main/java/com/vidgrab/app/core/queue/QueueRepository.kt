@@ -11,6 +11,7 @@ import com.vidgrab.app.core.database.TaskStatus
 import com.vidgrab.app.core.engine.DownloadEngineExecutor
 import com.vidgrab.app.core.extractor.DownloadRequestSpec
 import com.vidgrab.app.core.extractor.DualEngineMetadataResolver
+import com.vidgrab.app.core.worker.DownloadNotificationManager
 import com.vidgrab.app.core.worker.DownloadQueueWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +39,8 @@ class QueueRepository(private val context: Context) {
                 segs.joinToString(";") { "${it.first}-${it.second}" }
             }
 
+            val queueGroupTimestamp = System.currentTimeMillis()
+
             if (spec.isBatch) {
                 if (spec.batchItems.isNotEmpty()) {
                     // Bulk insert pre-selected playlist items with genuine titles and thumbnails
@@ -64,13 +67,17 @@ class QueueRepository(private val context: Context) {
                             playlistId = spec.url,
                             playlistTitle = spec.title,
                             playlistIndex = index + 1,
+                            queueGroup = queueGroupTimestamp,
+                            queueIndex = index + 1,
                             status = TaskStatus.PENDING,
                             totalBytes = itemBytes,
                             cutSponsor = spec.cutSponsor,
                             sponsorSegmentsJson = sponsorJson,
                             embedSubtitles = spec.embedSubtitles,
                             embedChapters = spec.embedChapters,
-                            downloadFolder = spec.downloadFolder
+                            downloadFolder = spec.downloadFolder,
+                            videoCodecPreference = spec.videoCodecPreference,
+                            mergeAudioExtension = spec.mergeAudioExtension
                         )
                     }
                     dao.insertTasks(entities)
@@ -99,13 +106,17 @@ class QueueRepository(private val context: Context) {
                             playlistId = spec.url,
                             playlistTitle = spec.title,
                             playlistIndex = index + 1,
+                            queueGroup = queueGroupTimestamp,
+                            queueIndex = index + 1,
                             status = TaskStatus.PENDING,
                             totalBytes = defaultItemBytes,
                             cutSponsor = spec.cutSponsor,
                             sponsorSegmentsJson = sponsorJson,
                             embedSubtitles = spec.embedSubtitles,
                             embedChapters = spec.embedChapters,
-                            downloadFolder = spec.downloadFolder
+                            downloadFolder = spec.downloadFolder,
+                            videoCodecPreference = spec.videoCodecPreference,
+                            mergeAudioExtension = spec.mergeAudioExtension
                         )
                     }
                     dao.insertTasks(entities)
@@ -132,6 +143,8 @@ class QueueRepository(private val context: Context) {
                     formatSelector = spec.formatSelector,
                     outputExt = spec.outputExtension,
                     useAria2c = spec.enableAria2c,
+                    queueGroup = queueGroupTimestamp,
+                    queueIndex = 0,
                     status = TaskStatus.PENDING,
                     totalBytes = spec.expectedSizeBytes,
                     cutSponsor = spec.cutSponsor,
@@ -143,7 +156,13 @@ class QueueRepository(private val context: Context) {
                     resolvedAudioStreamUrl = spec.resolvedAudioStreamUrl,
                     directVideoUrl = spec.directVideoUrl ?: spec.resolvedVideoStreamUrl,
                     directAudioUrl = spec.directAudioUrl ?: spec.resolvedAudioStreamUrl,
-                    isDirectMuxed = spec.isDirectMuxed
+                    isDirectMuxed = spec.isDirectMuxed,
+                    videoCodecPreference = spec.videoCodecPreference,
+                    mergeAudioTrackId = spec.mergeAudioTrackId,
+                    mergeAudioTrackName = spec.mergeAudioTrackName,
+                    mergeAudioLanguage = spec.mergeAudioLanguage,
+                    mergeAudioExtension = spec.mergeAudioExtension,
+                    mergeAudioBitrateKbps = spec.mergeAudioBitrateKbps
                 )
                 dao.insertTask(entity)
                 Timber.i("QueueRepository: Enqueued single download: %s [%s] with thumb: %s", spec.title, spec.formatSelector, effectiveThumb)
@@ -155,13 +174,30 @@ class QueueRepository(private val context: Context) {
     }
 
     private fun estimateItemBytes(isAudio: Boolean, targetHeight: Int?, durationSeconds: Long): Long {
-        return 0L
+        val dur = if (durationSeconds > 0) durationSeconds else 180L
+        if (isAudio) {
+            return (128000L * dur) / 8L
+        }
+        val h = targetHeight ?: 720
+        val vBitrate = when (h) {
+            2160 -> 12000000L
+            1440 -> 6000000L
+            1080 -> 2500000L
+            720 -> 1200000L
+            480 -> 650000L
+            360 -> 400000L
+            240 -> 220000L
+            144 -> 110000L
+            else -> 1200000L
+        }
+        return ((vBitrate + 128000L) * dur) / 8L
     }
 
     private suspend fun expandAndEnqueuePlaylist(spec: DownloadRequestSpec) {
         try {
             val playlistInfo = PlaylistInfo.getInfo(ServiceList.YouTube, spec.url)
             val items = playlistInfo.relatedItems
+            val queueGroupTimestamp = System.currentTimeMillis()
             val entities = items.mapIndexedNotNull { index, item ->
                 val cleanUrl = when {
                     item.url.isNullOrBlank() -> null
@@ -190,11 +226,15 @@ class QueueRepository(private val context: Context) {
                     playlistId = spec.url,
                     playlistTitle = spec.title,
                     playlistIndex = index + 1,
+                    queueGroup = queueGroupTimestamp,
+                    queueIndex = index + 1,
                     status = TaskStatus.PENDING,
                     totalBytes = itemBytes,
                     cutSponsor = spec.cutSponsor,
                     embedSubtitles = spec.embedSubtitles,
-                    embedChapters = spec.embedChapters
+                    embedChapters = spec.embedChapters,
+                    videoCodecPreference = spec.videoCodecPreference,
+                    mergeAudioExtension = spec.mergeAudioExtension
                 )
             }
             dao.insertTasks(entities)
@@ -212,11 +252,15 @@ class QueueRepository(private val context: Context) {
                 formatSelector = spec.formatSelector,
                 outputExt = spec.outputExtension,
                 useAria2c = spec.enableAria2c,
+                queueGroup = System.currentTimeMillis(),
+                queueIndex = 0,
                 status = TaskStatus.PENDING,
                 totalBytes = spec.expectedSizeBytes,
                 cutSponsor = spec.cutSponsor,
                 embedSubtitles = spec.embedSubtitles,
-                embedChapters = spec.embedChapters
+                embedChapters = spec.embedChapters,
+                videoCodecPreference = spec.videoCodecPreference,
+                mergeAudioExtension = spec.mergeAudioExtension
             )
             dao.insertTask(fallback)
         }
@@ -244,6 +288,9 @@ class QueueRepository(private val context: Context) {
         DownloadQueueWorker.cancelJob(taskId)
         scope.launch {
             dao.updateStatus(taskId, TaskStatus.PAUSED)
+            dao.getTaskById(taskId)?.let { task ->
+                DownloadNotificationManager.postStatusNotification(context, task)
+            }
             Timber.i("QueueRepository: Paused task %s", taskId)
         }
     }
@@ -287,9 +334,21 @@ class QueueRepository(private val context: Context) {
     fun cancelTask(taskId: String) {
         DownloadEngineExecutor.cancelTask(context, taskId)
         DownloadQueueWorker.cancelJob(taskId)
+        DownloadNotificationManager.cancelProgressNotification(context, taskId)
         scope.launch {
-            dao.updateStatus(taskId, TaskStatus.CANCELLED)
-            Timber.i("QueueRepository: Cancelled task %s", taskId)
+            dao.deleteTask(taskId)
+            Timber.i("QueueRepository: Cancelled and deleted task %s", taskId)
+        }
+    }
+
+    fun resetInterruptedTasks() {
+        scope.launch {
+            val interruptedCount = dao.countInterruptedTasks()
+            if (interruptedCount > 0) {
+                dao.resetInterruptedTasks()
+                startQueueWorker()
+                Timber.i("QueueRepository: Reset and re-queued %d interrupted task(s)", interruptedCount)
+            }
         }
     }
 
@@ -297,6 +356,7 @@ class QueueRepository(private val context: Context) {
         scope.launch {
             DownloadEngineExecutor.cancelTask(context, taskId)
             dao.deleteTask(taskId)
+            DownloadNotificationManager.cancelProgressNotification(context, taskId)
             Timber.i("QueueRepository: Deleted task %s from database", taskId)
         }
     }

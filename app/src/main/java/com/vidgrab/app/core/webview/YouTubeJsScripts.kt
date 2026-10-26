@@ -619,6 +619,52 @@ object YouTubeJsScripts {
     }
     window.__vidgrabGetPlaylistVideos = getPlaylistVideosFromPage;
 
+    // =========================================================================
+    // SECTION: Theme-aware button styling (explicit colors, no page CSS variables)
+    // =========================================================================
+    // Page CSS variables (--yt-spec-*) proved unreliable in shadow-DOM contexts and left
+    // buttons with black-on-black fallback colors. We detect YouTube's active theme instead
+    // and drive explicit high-contrast colors, re-checking cheaply on the existing 1s tick.
+    function vgIsDarkTheme() {
+        try {
+            var root = document.documentElement;
+            if (root && (root.hasAttribute('dark') || root.classList.contains('dark'))) return true;
+            if (document.querySelector('ytm-app[dark], ytd-app[dark], html[dark]')) return true;
+            var body = document.body;
+            if (body && (body.hasAttribute('dark') || body.classList.contains('dark'))) return true;
+            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return true;
+        } catch (e) {}
+        return false;
+    }
+
+    var vgThemedButtons = [];
+    var vgLastDark = vgIsDarkTheme();
+
+    function vgRegisterThemeButton(btn) {
+        vgThemedButtons.push(btn);
+        // Bounded registry: drop the oldest half if a long session injects huge lists.
+        if (vgThemedButtons.length > 120) {
+            vgThemedButtons = vgThemedButtons.slice(-60);
+        }
+    }
+
+    function vgSyncButtonThemes() {
+        var dark = vgIsDarkTheme();
+        if (dark === vgLastDark) return;
+        vgLastDark = dark;
+        for (var i = vgThemedButtons.length - 1; i >= 0; i--) {
+            var b = vgThemedButtons[i];
+            if (!b || !b.isConnected) {
+                vgThemedButtons.splice(i, 1);
+                continue;
+            }
+            try {
+                if (dark) b.classList.add('vg-dark');
+                else b.classList.remove('vg-dark');
+            } catch (e) {}
+        }
+    }
+
     function createShadowButton(cardNode) {
         var topCard = getTopCard(cardNode);
         if (!topCard) return;
@@ -678,61 +724,114 @@ object YouTubeJsScripts {
 
         var style = document.createElement('style');
         style.textContent = '' +
-            '.vg-icon-btn {' +
+            '.vg-btn {' +
             '    display: inline-flex;' +
             '    align-items: center;' +
             '    justify-content: center;' +
-            '    width: 32px;' +
-            '    height: 32px;' +
-            '    min-width: 32px;' +
-            '    min-height: 32px;' +
-            '    background: rgba(128, 128, 128, 0.28);' +
-            '    color: var(--yt-spec-text-primary, #ffffff);' +
-            '    border: 1px solid rgba(128, 128, 128, 0.4);' +
+            '    width: 34px;' +
+            '    height: 34px;' +
+            '    padding: 0;' +
+            '    border: none;' +
             '    border-radius: 50%;' +
+            '    background: rgba(0, 0, 0, 0.08);' +
+            '    color: #0f0f0f;' +
             '    cursor: pointer;' +
-            '    backdrop-filter: blur(8px);' +
-            '    -webkit-backdrop-filter: blur(8px);' +
-            '    transition: transform 0.12s ease, background-color 0.15s ease;' +
             '    user-select: none;' +
             '    -webkit-tap-highlight-color: transparent;' +
-            '    padding: 0;' +
-            '    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);' +
+            '    transition: background-color 0.15s ease, color 0.15s ease, transform 0.12s ease;' +
             '}' +
-            '.vg-icon-btn:active {' +
-            '    transform: scale(0.88);' +
-            '    background: rgba(128, 128, 128, 0.55);' +
+            '.vg-btn.vg-dark {' +
+            '    background: rgba(255, 255, 255, 0.14);' +
+            '    color: #f1f1f1;' +
             '}' +
-            '.vg-icon-btn svg {' +
+            '.vg-btn:active {' +
+            '    transform: scale(0.9);' +
+            '    background: rgba(0, 0, 0, 0.16);' +
+            '}' +
+            '.vg-btn.vg-dark:active {' +
+            '    background: rgba(255, 255, 255, 0.24);' +
+            '}' +
+            '.vg-btn svg {' +
+            '    width: 22px;' +
+            '    height: 22px;' +
+            '    fill: currentColor;' +
+            '    pointer-events: none;' +
+            '}' +
+            '.vg-btn.vg-compact {' +
+            '    width: 30px;' +
+            '    height: 30px;' +
+            '}' +
+            '.vg-btn.vg-compact svg {' +
+            '    width: 18px;' +
+            '    height: 18px;' +
+            '}' +
+            '.vg-spinner {' +
+            '    display: none;' +
             '    width: 16px;' +
             '    height: 16px;' +
-            '    stroke: currentColor;' +
-            '    stroke-width: 2.2;' +
-            '    stroke-linecap: round;' +
-            '    stroke-linejoin: round;' +
-            '    fill: none;' +
+            '    border: 2px solid currentColor;' +
+            '    border-top-color: transparent;' +
+            '    border-radius: 50%;' +
+            '    animation: vgSpin 0.7s linear infinite;' +
+            '}' +
+            '.vg-btn.vg-loading svg {' +
+            '    display: none;' +
+            '}' +
+            '.vg-btn.vg-loading .vg-spinner {' +
+            '    display: inline-block;' +
+            '}' +
+            '@keyframes vgSpin {' +
+            '    to { transform: rotate(360deg); }' +
             '}';
 
+        var isCompactContext = topCard.matches('ytm-compact-video-renderer, ytm-compact-playlist-renderer');
+
         var btn = document.createElement('button');
-        btn.className = 'vg-icon-btn';
+        btn.className = 'vg-btn' + (isCompactContext ? ' vg-compact' : '');
         btn.setAttribute('aria-label', 'Download');
+        if (vgIsDarkTheme()) btn.classList.add('vg-dark');
+        vgRegisterThemeButton(btn);
+
         var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         svg.setAttribute('viewBox', '0 0 24 24');
-        var p1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        p1.setAttribute('d', 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4');
-        var p2 = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-        p2.setAttribute('points', '7 10 12 15 17 10');
-        var l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        l1.setAttribute('x1', '12'); l1.setAttribute('y1', '15'); l1.setAttribute('x2', '12'); l1.setAttribute('y2', '3');
-        svg.appendChild(p1);
-        svg.appendChild(p2);
-        svg.appendChild(l1);
+        var iconPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        iconPath.setAttribute('d', 'M17 18v1H6v-1h11zm-.5-6.6-.7-.7-3.3 3.3V4h-1v10l-3.3-3.3-.7.7 4.5 4.5 4.5-4.5z');
+        svg.appendChild(iconPath);
         btn.appendChild(svg);
+
+        var spinner = document.createElement('span');
+        spinner.className = 'vg-spinner';
+        btn.appendChild(spinner);
+
+        function setBtnLoading(loading) {
+            if (loading) {
+                btn.classList.add('vg-loading');
+                if (btn.__vgLoadingTimer) clearTimeout(btn.__vgLoadingTimer);
+                btn.__vgLoadingTimer = setTimeout(function() { setBtnLoading(false); }, 4000);
+            } else {
+                btn.classList.remove('vg-loading');
+                if (btn.__vgLoadingTimer) {
+                    clearTimeout(btn.__vgLoadingTimer);
+                    btn.__vgLoadingTimer = null;
+                }
+            }
+        }
+        // Exposed so the native ack (sheet opened) can stop the spinner deterministically.
+        btn.__vgSetLoading = setBtnLoading;
 
         function handleDownloadTrigger(e) {
             e.stopPropagation();
             e.stopImmediatePropagation();
             e.preventDefault();
+
+            // Instant feedback + debounce (touchend and click both fire on Android WebView).
+            var triggerNow = Date.now();
+            if (btn.__vgLastTrigger && (triggerNow - btn.__vgLastTrigger) < 700) {
+                return;
+            }
+            btn.__vgLastTrigger = triggerNow;
+            window.__vidgrabActiveTriggerBtn = btn;
+            setBtnLoading(true);
 
             try {
                 document.querySelectorAll('video').forEach(function(v) {
@@ -867,15 +966,23 @@ object YouTubeJsScripts {
                 }
             }
 
+            // Instant popup: hand the trigger to native right away using whatever inline player
+            // response is already in memory, so the sheet opens (and shows its loader) immediately.
+            sendTrigger(inlinePlayerJson);
+
+            // Then fetch a fresher direct player response in the background and hand it over as a
+            // payload refresh. Native only applies this while the picker is still loading for the
+            // same URL, so it upgrades slow resolutions without re-opening a dismissed sheet.
             if (itemType !== 'PLAYLIST' && targetVid && window.__vidgrabFetchDirectPlayerJson) {
                 window.__vidgrabFetchDirectPlayerJson(targetVid).then(function(res) {
-                    var finalJson = res ? JSON.stringify(res) : inlinePlayerJson;
-                    sendTrigger(finalJson);
-                }).catch(function() {
-                    sendTrigger(inlinePlayerJson);
-                });
-            } else {
-                sendTrigger(inlinePlayerJson);
+                    var freshJson = res ? JSON.stringify(res) : '';
+                    if (freshJson && freshJson !== inlinePlayerJson &&
+                        window.VidGrabBridge && window.VidGrabBridge.onDownloadPayloadRefreshed) {
+                        try {
+                            window.VidGrabBridge.onDownloadPayloadRefreshed(cleanUrl, itemType, title, freshJson, durationSec, playlistItemsJson);
+                        } catch (err) {}
+                    }
+                }).catch(function() {});
             }
         }
 
@@ -996,7 +1103,18 @@ object YouTubeJsScripts {
     setInterval(function() {
         checkInitialPlayerResponse();
         if (window.__vidgrabScanNodes) window.__vidgrabScanNodes();
+        vgSyncButtonThemes();
     }, 1000);
+
+    // Called by native the moment the quality picker sheet is visible, so the tapped button can
+    // drop its spinner and the flow never leaves the user staring at a loading icon.
+    window.__vidgrabTriggerAck = function() {
+        var activeBtn = window.__vidgrabActiveTriggerBtn;
+        if (activeBtn && activeBtn.__vgSetLoading) {
+            try { activeBtn.__vgSetLoading(false); } catch (err) {}
+        }
+        window.__vidgrabActiveTriggerBtn = null;
+    };
 
     window.__vidgrabScanNodes();
     checkInitialPlayerResponse();

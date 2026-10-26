@@ -64,3 +64,5 @@ Thumbs.db
 web_ui_prototype/
 *.local
 
+.workbuddy-ai
+/docs

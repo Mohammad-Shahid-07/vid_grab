@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.vidgrab.app.App
+import com.vidgrab.app.ui.theme.AppTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
@@ -110,13 +111,13 @@ fun AsyncThumbnailImage(
             )
         } else {
             Box(
-                modifier = modifier.background(Color(0xFFEFE8DF)),
+                modifier = modifier.background(AppTheme.colors.pillBg),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.Movie,
                     contentDescription = null,
-                    tint = Color(0xFFC7BEB5),
+                    tint = AppTheme.colors.textMuted,
                     modifier = Modifier.size(20.dp)
                 )
             }

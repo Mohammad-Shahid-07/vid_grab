@@ -35,7 +35,7 @@
             android:maxLines="1"
             android:ellipsize="end" />
 
-        <!-- Modern Gold Progress Bar -->
+        <!-- Download progress (accent color is applied at runtime) -->
         <ProgressBar
             android:id="@+id/notif_progress"
             style="?android:attr/progressBarStyleHorizontal"
@@ -44,7 +44,6 @@
             android:layout_marginTop="5dp"
             android:layout_marginBottom="4dp"
             android:indeterminateOnly="false"
-            android:progressTint="#E5A93C"
             android:progressBackgroundTint="#2C2C32"
             android:max="100"
             android:progress="0" />
@@ -75,7 +74,7 @@
                 android:layout_marginStart="6dp"
                 android:text="Downloading..."
                 android:textSize="11sp"
-                android:textColor="#E5A93C"
+                android:textColor="#FFFFFF"
                 android:maxLines="1"
                 android:ellipsize="end" />
         </LinearLayout>

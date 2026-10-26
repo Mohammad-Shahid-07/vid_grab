@@ -11,27 +11,40 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.Request
 import timber.log.Timber
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.coroutineContext
 
 object FastDirectDownloader {
 
-    private const val CHUNK_SIZE = 9L * 1024L * 1024L
+    const val PARALLEL_CONNECTIONS = 8
     const val USER_AGENT = InnerTubeFastClient.VISIONOS_USER_AGENT
     const val REFERER = "https://www.youtube.com/"
     const val ORIGIN = "https://www.youtube.com"
 
+    private val highSpeedDispatcher = Dispatcher().apply {
+        maxRequests = 64
+        maxRequestsPerHost = 32
+    }
+
+    private val highSpeedConnectionPool = ConnectionPool(32, 5, TimeUnit.MINUTES)
+
     private val streamHttpClient by lazy {
         com.vidgrab.app.App.sharedOkHttpClient.newBuilder()
-            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-            .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-            .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS) // No call timeout for large media streams
+            .dispatcher(highSpeedDispatcher)
+            .connectionPool(highSpeedConnectionPool)
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(25, TimeUnit.SECONDS)
+            .writeTimeout(25, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS) // No call timeout for large media streams
             .build()
     }
 
@@ -74,17 +87,21 @@ object FastDirectDownloader {
     }
 
     /**
-     * Downloads direct googlevideo.com streams in < 1 second connect time.
-     * Supports:
-     *  1. Single muxed video stream OR audio-only stream
-     *  2. Separate MP4 video + M4A audio streams (downloaded in parallel & muxed via Android MediaMuxer in ~0.5s)
+     * Downloads direct googlevideo.com streams using true IDM-style 8-connection parallel segmented streaming.
      */
     suspend fun downloadFast(
         taskId: String?,
         videoUrl: String?,
         audioUrl: String?,
         outputFile: File,
-        onProgress: suspend (percent: Int, downloadedBytes: Long, totalBytes: Long, speedBytesPerSec: Long) -> Unit
+        onProgress: suspend (
+            percent: Int,
+            downloadedBytes: Long,
+            totalBytes: Long,
+            speedBytesPerSec: Long,
+            activeConnections: Int,
+            segmentProgressCsv: String
+        ) -> Unit
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val startTime = System.currentTimeMillis()
@@ -94,119 +111,283 @@ object FastDirectDownloader {
                 throw kotlinx.coroutines.CancellationException("Task $taskId was paused before start")
             }
 
-            // Case 1: Single stream (Audio-only OR pre-muxed video)
+            val parentDir = outputFile.parentFile ?: outputFile
+            parentDir.mkdirs()
+
+            // Case 1: Single stream (Audio-only OR pre-muxed progressive video)
             if (videoUrl.isNullOrBlank() || audioUrl.isNullOrBlank()) {
                 val singleUrl = if (!videoUrl.isNullOrBlank()) videoUrl else (audioUrl ?: error("No direct URL provided"))
                 val totalBytes = fetchContentLength(singleUrl)
                 val downloadedAtomic = AtomicLong(0L)
+                val activeConns = AtomicInteger(0)
 
-                downloadStreamInChunks(taskId, singleUrl, outputFile, totalBytes) { bytesJustRead ->
-                    val current = downloadedAtomic.addAndGet(bytesJustRead)
+                val segmentFractions = FloatArray(PARALLEL_CONNECTIONS) { 0f }
+
+                // Download into a .part file so an interrupted attempt is never picked up as a finished media file.
+                // The .vgstate sidecar records per-segment byte offsets so a paused transfer resumes instead of restarting.
+                val partialFile = File(parentDir, outputFile.name + ".part")
+                val stateFile = File(parentDir, outputFile.name + ".part.vgstate")
+
+                val emitProgress: (Boolean) -> Unit = { force ->
+                    val current = downloadedAtomic.get()
                     val now = System.currentTimeMillis()
-                    if (now - lastCallbackTime >= 300 || current == totalBytes) {
+                    if (force || now - lastCallbackTime >= 250 || (totalBytes > 0 && current >= totalBytes)) {
                         lastCallbackTime = now
                         val elapsedSec = ((now - startTime) / 1000.0).coerceAtLeast(0.1)
-                        val speed = (current / elapsedSec).toLong()
+                        val speed = if (force) 0L else (current / elapsedSec).toLong()
                         val pct = if (totalBytes > 0) ((current * 100L) / totalBytes).toInt().coerceIn(0, 100) else 0
+                        val csv = segmentFractions.joinToString(",") { String.format(java.util.Locale.US, "%.2f", it) }
+                        val conns = activeConns.get().coerceIn(1, PARALLEL_CONNECTIONS)
                         kotlinx.coroutines.runBlocking {
-                            onProgress(pct, current, totalBytes, speed)
+                            onProgress(pct, current, totalBytes, speed, conns, csv)
                         }
                     }
+                }
+
+                downloadStreamInSegments(
+                    taskId = taskId,
+                    url = singleUrl,
+                    targetFile = partialFile,
+                    stateFile = stateFile,
+                    totalBytes = totalBytes,
+                    activeConns = activeConns,
+                    onSegmentProgress = { segIndex, fraction ->
+                        if (segIndex in segmentFractions.indices) {
+                            segmentFractions[segIndex] = fraction
+                        }
+                    },
+                    onResumedBytes = { resumed ->
+                        if (resumed > 0L) {
+                            downloadedAtomic.set(resumed)
+                            emitProgress(true)
+                        }
+                    },
+                    onBytesRead = { bytesJustRead ->
+                        downloadedAtomic.addAndGet(bytesJustRead)
+                        emitProgress(false)
+                    }
+                )
+
+                if (partialFile.length() <= 0L) {
+                    error("Direct stream produced an empty file")
+                }
+                // A pause that lands after the last byte must keep the finished .part resumable,
+                // so the next run only has to rename it instead of transferring again.
+                if (taskId != null && DownloadEngineExecutor.isPaused(taskId)) {
+                    throw kotlinx.coroutines.CancellationException("Task $taskId was paused before finalizing")
+                }
+                SegmentResumeState.delete(stateFile)
+                if (outputFile.exists() && !outputFile.delete()) {
+                    error("Could not replace existing output file ${outputFile.name}")
+                }
+                if (!partialFile.renameTo(outputFile)) {
+                    partialFile.copyTo(outputFile, overwrite = true)
+                    partialFile.delete()
                 }
                 return@runCatching outputFile
             }
 
             // Case 2: Separate Video (.mp4) + Audio (.m4a) -> Download in Parallel + Native Mux!
-            val parentDir = outputFile.parentFile ?: outputFile
-            parentDir.mkdirs()
-            val tempVideo = File(parentDir, "${outputFile.nameWithoutExtension}_temp_v.mp4")
-            val tempAudio = File(parentDir, "${outputFile.nameWithoutExtension}_temp_a.m4a")
+            val tempVideo = File(parentDir, "${outputFile.nameWithoutExtension}_temp_v.mp4.part")
+            val tempAudio = File(parentDir, "${outputFile.nameWithoutExtension}_temp_a.m4a.part")
+            val videoStateFile = File(parentDir, "${outputFile.nameWithoutExtension}_temp_v.vgstate")
+            val audioStateFile = File(parentDir, "${outputFile.nameWithoutExtension}_temp_a.vgstate")
+            val partialFile = File(parentDir, outputFile.name + ".part")
 
-            try {
-                val (videoSize, audioSize) = coroutineScope {
-                    val vJob = async { fetchContentLength(videoUrl) }
-                    val aJob = async { fetchContentLength(audioUrl) }
-                    vJob.await() to aJob.await()
-                }
-                val combinedTotal = (videoSize.takeIf { it > 0 } ?: 0L) + (audioSize.takeIf { it > 0 } ?: 0L)
-                val downloadedAtomic = AtomicLong(0L)
+            val (videoSize, audioSize) = coroutineScope {
+                val vJob = async { fetchContentLength(videoUrl) }
+                val aJob = async { fetchContentLength(audioUrl) }
+                vJob.await() to aJob.await()
+            }
+            val combinedTotal = (videoSize.takeIf { it > 0 } ?: 0L) + (audioSize.takeIf { it > 0 } ?: 0L)
+            val downloadedAtomic = AtomicLong(0L)
+            val activeConns = AtomicInteger(0)
 
-                val reportProgress: (Long) -> Unit = { delta ->
-                    val current = downloadedAtomic.addAndGet(delta)
-                    val now = System.currentTimeMillis()
-                    if (now - lastCallbackTime >= 300) {
-                        lastCallbackTime = now
-                        val elapsedSec = ((now - startTime) / 1000.0).coerceAtLeast(0.1)
-                        val speed = (current / elapsedSec).toLong()
-                        val pct = if (combinedTotal > 0) ((current * 95L) / combinedTotal).toInt().coerceIn(0, 95) else 0
-                        kotlinx.coroutines.runBlocking {
-                            onProgress(pct, current, combinedTotal, speed)
-                        }
+            val segmentFractions = FloatArray(PARALLEL_CONNECTIONS) { 0f }
+
+            val reportProgress: (Boolean) -> Unit = { force ->
+                val current = downloadedAtomic.get()
+                val now = System.currentTimeMillis()
+                if (force || now - lastCallbackTime >= 250) {
+                    lastCallbackTime = now
+                    val elapsedSec = ((now - startTime) / 1000.0).coerceAtLeast(0.1)
+                    val speed = if (force) 0L else (current / elapsedSec).toLong()
+                    val pct = if (combinedTotal > 0) ((current * 95L) / combinedTotal).toInt().coerceIn(0, 95) else 0
+                    val csv = segmentFractions.joinToString(",") { String.format(java.util.Locale.US, "%.2f", it) }
+                    val conns = activeConns.get().coerceIn(1, PARALLEL_CONNECTIONS)
+                    kotlinx.coroutines.runBlocking {
+                        onProgress(pct, current, combinedTotal, speed, conns, csv)
                     }
                 }
-
-                // Download video & audio streams simultaneously
-                coroutineScope {
-                    val vJob = async { downloadStreamInChunks(taskId, videoUrl, tempVideo, videoSize, reportProgress) }
-                    val aJob = async { downloadStreamInChunks(taskId, audioUrl, tempAudio, audioSize, reportProgress) }
-                    awaitAll(vJob, aJob)
-                }
-
-                if (taskId != null && DownloadEngineExecutor.isPaused(taskId)) {
-                    throw kotlinx.coroutines.CancellationException("Task $taskId was paused before muxing")
-                }
-
-                // Fast hardware-level MP4 + M4A muxing (takes ~0.5 seconds, zero re-encoding)
-                onProgress(97, combinedTotal, combinedTotal, 0L)
-                muxVideoAndAudioMp4(tempVideo, tempAudio, outputFile)
-                onProgress(100, combinedTotal, combinedTotal, 0L)
-                outputFile
-            } finally {
-                runCatching { tempVideo.delete() }
-                runCatching { tempAudio.delete() }
             }
-        }
-    }
 
-    private suspend fun downloadStreamInChunks(
+            // Download video (6 sockets) & audio (2 sockets) simultaneously = 8 concurrent connections!
+            coroutineScope {
+                val vJob = async {
+                    downloadStreamInSegments(
+                        taskId = taskId,
+                        url = videoUrl,
+                        targetFile = tempVideo,
+                        stateFile = videoStateFile,
+                        totalBytes = videoSize,
+                        parallelCount = 6,
+                        activeConns = activeConns,
+                        onSegmentProgress = { idx, frac ->
+                            if (idx in 0..5) segmentFractions[idx] = frac
+                        },
+                        onResumedBytes = { resumed ->
+                            if (resumed > 0L) {
+                                downloadedAtomic.addAndGet(resumed)
+                                reportProgress(true)
+                            }
+                        },
+                        onBytesRead = { delta ->
+                            downloadedAtomic.addAndGet(delta)
+                            reportProgress(false)
+                        }
+                    )
+                }
+                val aJob = async {
+                    downloadStreamInSegments(
+                        taskId = taskId,
+                        url = audioUrl,
+                        targetFile = tempAudio,
+                        stateFile = audioStateFile,
+                        totalBytes = audioSize,
+                        parallelCount = 2,
+                        activeConns = activeConns,
+                        onSegmentProgress = { idx, frac ->
+                            val slot = 6 + idx
+                            if (slot in segmentFractions.indices) segmentFractions[slot] = frac
+                        },
+                        onResumedBytes = { resumed ->
+                            if (resumed > 0L) {
+                                downloadedAtomic.addAndGet(resumed)
+                                reportProgress(true)
+                            }
+                        },
+                        onBytesRead = { delta ->
+                            downloadedAtomic.addAndGet(delta)
+                            reportProgress(false)
+                        }
+                    )
+                }
+                awaitAll(vJob, aJob)
+            }
+
+            if (taskId != null && DownloadEngineExecutor.isPaused(taskId)) {
+                throw kotlinx.coroutines.CancellationException("Task $taskId was paused before muxing")
+            }
+
+            // Fast hardware-level MP4 + M4A muxing (~0.5s). Both streams are complete at this
+            // point, so a paused mux only costs the mux again — never the transfer.
+            onProgress(97, combinedTotal, combinedTotal, 0L, 0, "")
+            muxVideoAndAudio(tempVideo, tempAudio, partialFile)
+
+            if (partialFile.length() <= 0L) {
+                error("Muxing produced an empty media file")
+            }
+            // Both streams are complete; a pause here only costs the (fast) mux again.
+            if (taskId != null && DownloadEngineExecutor.isPaused(taskId)) {
+                throw kotlinx.coroutines.CancellationException("Task $taskId was paused after muxing")
+            }
+            if (outputFile.exists() && !outputFile.delete()) {
+                error("Could not replace existing output file ${outputFile.name}")
+            }
+            if (!partialFile.renameTo(outputFile)) {
+                partialFile.copyTo(outputFile, overwrite = true)
+                partialFile.delete()
+            }
+
+            // Only a finished file clears the byte maps and the stream partials.
+            SegmentResumeState.delete(videoStateFile)
+            SegmentResumeState.delete(audioStateFile)
+            runCatching { tempVideo.delete() }
+            runCatching { tempAudio.delete() }
+
+            val finalSize = outputFile.length().takeIf { it > 0L } ?: combinedTotal
+            onProgress(100, finalSize, finalSize, 0L, 0, "")
+            outputFile
+        }
+    }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+
+    private suspend fun downloadStreamInSegments(
         taskId: String?,
         url: String,
         targetFile: File,
+        stateFile: File,
         totalBytes: Long,
+        parallelCount: Int = PARALLEL_CONNECTIONS,
+        activeConns: AtomicInteger,
+        onSegmentProgress: (Int, Float) -> Unit = { _, _ -> },
+        onResumedBytes: (Long) -> Unit = {},
         onBytesRead: (Long) -> Unit
     ) = coroutineScope {
         if (taskId != null && DownloadEngineExecutor.isPaused(taskId)) {
             throw kotlinx.coroutines.CancellationException("Task $taskId was paused")
         }
 
-        if (totalBytes <= 10L * 1024L * 1024L) {
-            // Direct single-stream fast download (fastest for audio and files <=10MB)
-            downloadByteRange(taskId, url, targetFile, 0L, -1L, onBytesRead)
+        // Unknown length (no clen=, no Content-Length): a byte map is impossible, so stream once
+        // and accept that this particular stream cannot be resumed.
+        if (totalBytes <= 0L) {
+            activeConns.incrementAndGet()
+            try {
+                downloadByteRange(taskId, url, targetFile, startByte = 0L, endByte = -1L, onBytesRead = onBytesRead)
+                onSegmentProgress(0, 1f)
+            } finally {
+                activeConns.decrementAndGet()
+            }
             return@coroutineScope
         }
 
-        // Split into 9 MB ranges and download with up to 3 parallel workers
-        val ranges = mutableListOf<Pair<Long, Long>>()
-        var start = 0L
-        while (start < totalBytes) {
-            val end = (start + CHUNK_SIZE - 1).coerceAtMost(totalBytes - 1)
-            ranges.add(start to end)
-            start = end + 1
-        }
+        // One socket for tiny streams (<= 2 MB), IDM-style parallel ranges above that.
+        val requestedSegments = if (totalBytes <= 2L * 1024L * 1024L) 1 else parallelCount.coerceAtLeast(1)
+        val resume = SegmentResumeState.open(
+            stateFile = stateFile,
+            streamId = SegmentResumeState.streamIdentity(url, totalBytes),
+            totalBytes = totalBytes,
+            planned = SegmentResumeState.plan(totalBytes, requestedSegments)
+        )
 
-        ranges.chunked(3).forEach { batch ->
-            if (taskId != null && DownloadEngineExecutor.isPaused(taskId)) {
-                throw kotlinx.coroutines.CancellationException("Task $taskId was paused")
-            }
-            batch.map { (rangeStart, rangeEnd) ->
+        // Paint the restored byte map before the first socket opens so the UI resumes at the real
+        // percentage instead of dropping to zero.
+        resume.segments.indices.forEach { index -> onSegmentProgress(index, resume.fraction(index)) }
+        resume.downloadedTotal().takeIf { it > 0L }?.let(onResumedBytes)
+
+        try {
+            resume.segments.mapIndexed { index, segment ->
                 async(Dispatchers.IO) {
                     coroutineContext.ensureActive()
                     if (taskId != null && DownloadEngineExecutor.isPaused(taskId)) {
                         throw kotlinx.coroutines.CancellationException("Task $taskId was paused")
                     }
-                    downloadByteRange(taskId, url, targetFile, rangeStart, rangeEnd, onBytesRead)
+                    activeConns.incrementAndGet()
+                    try {
+                        val from = segment.nextOffset
+                        if (from <= segment.end) {
+                            downloadByteRange(
+                                taskId = taskId,
+                                url = url,
+                                targetFile = targetFile,
+                                startByte = from,
+                                endByte = segment.end,
+                                expectedBytes = segment.end - from + 1L
+                            ) { bytesRead ->
+                                resume.recordBytes(index, bytesRead)
+                                onSegmentProgress(index, resume.fraction(index))
+                                resume.persist()
+                                onBytesRead(bytesRead)
+                            }
+                        }
+                        onSegmentProgress(index, 1f)
+                    } finally {
+                        activeConns.decrementAndGet()
+                    }
                 }
             }.awaitAll()
+        } finally {
+            // Pause/cancellation lands here too: flush the byte map so the next run continues.
+            resume.persist(force = true)
         }
     }
 
@@ -216,10 +397,12 @@ object FastDirectDownloader {
         targetFile: File,
         startByte: Long,
         endByte: Long,
+        expectedBytes: Long = -1L,
         onBytesRead: (Long) -> Unit
     ) {
         val reqBuilder = createStreamRequestBuilder(url)
-        if (endByte >= startByte) {
+        val isRangeRequest = endByte >= startByte
+        if (isRangeRequest) {
             reqBuilder.addHeader("Range", "bytes=$startByte-$endByte")
         }
 
@@ -228,11 +411,32 @@ object FastDirectDownloader {
                 Timber.e("FastDirectDownloader: HTTP %d for url: %s", response.code, url)
                 error("Stream HTTP error: ${response.code}")
             }
+
+            // Anti-Corruption Defense: a ranged request MUST come back as 206 Partial Content.
+            // If the server ignores Range and sends 200 OK, writing at a byte offset would corrupt the file.
+            if (isRangeRequest) {
+                if (response.code != 206) {
+                    Timber.w("FastDirectDownloader: Server ignored byte range %d-%d (HTTP %d)", startByte, endByte, response.code)
+                    error("Server ignored byte range request (returned ${response.code})")
+                }
+                val contentRange = response.header("Content-Range")
+                val rangeStart = contentRange
+                    ?.substringAfter("bytes ", "")
+                    ?.substringBefore("-")
+                    ?.trim()
+                    ?.toLongOrNull()
+                if (rangeStart != null && rangeStart != startByte) {
+                    Timber.w("FastDirectDownloader: Wrong Content-Range start '%s' (expected %d)", contentRange, startByte)
+                    error("Server returned a mismatched Content-Range")
+                }
+            }
+
             val body = response.body ?: error("Empty stream body")
+            var totalRead = 0L
 
             RandomAccessFile(targetFile, "rw").use { raf ->
                 raf.seek(startByte)
-                val buffer = ByteArray(64 * 1024) // 64 KB buffer for fast sequential disk writes
+                val buffer = ByteArray(64 * 1024) // 64 KB buffer for high-throughput writes
                 val input = body.byteStream()
                 var read: Int
                 while (input.read(buffer).also { read = it } != -1) {
@@ -241,8 +445,14 @@ object FastDirectDownloader {
                         throw kotlinx.coroutines.CancellationException("Task $taskId was paused")
                     }
                     raf.write(buffer, 0, read)
+                    totalRead += read
                     onBytesRead(read.toLong())
                 }
+            }
+
+            if (expectedBytes > 0L && totalRead != expectedBytes) {
+                // A truncated body must never be treated as a completed segment.
+                error("Short range read: expected $expectedBytes bytes but received $totalRead")
             }
         }
     }
@@ -264,6 +474,59 @@ object FastDirectDownloader {
                     ?: -1L
             }
         }.getOrDefault(-1L)
+    }
+
+    private fun muxVideoAndAudio(videoFile: File, audioFile: File, outputFile: File) {
+        try {
+            muxVideoAndAudioMp4(videoFile, audioFile, outputFile)
+            return
+        } catch (e: Exception) {
+            Timber.w(e, "FastDirectDownloader: MediaMuxer failed, attempting FFmpeg -c copy fallback")
+            runCatching { outputFile.delete() }
+        }
+        val ffmpegSuccess = muxViaFfmpeg(videoFile, audioFile, outputFile)
+        if (!ffmpegSuccess) {
+            throw RuntimeException("Both MediaMuxer and FFmpeg copy failed to mux audio and video")
+        }
+    }
+
+    /**
+     * Real FFmpeg stream-copy mux fallback (used when MediaMuxer cannot handle the codecs).
+     * Runs the bundled libffmpeg.so binary directly from the app's native library dir.
+     */
+    private fun muxViaFfmpeg(videoFile: File, audioFile: File, outputFile: File): Boolean {
+        return runCatching {
+            val nativeDir = com.vidgrab.app.App.instance.applicationInfo.nativeLibraryDir
+            val ffmpegBin = File(nativeDir, "libffmpeg.so")
+            if (!ffmpegBin.exists() || !ffmpegBin.canExecute()) {
+                Timber.w("FastDirectDownloader: libffmpeg.so missing at %s", ffmpegBin.absolutePath)
+                return false
+            }
+
+            val command = listOf(
+                ffmpegBin.absolutePath,
+                "-y",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-i", videoFile.absolutePath,
+                "-i", audioFile.absolutePath,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                outputFile.absolutePath
+            )
+            val process = ProcessBuilder(command).apply {
+                environment()["LD_LIBRARY_PATH"] = nativeDir
+                redirectErrorStream(true)
+            }.start()
+
+            process.inputStream.readBytes()
+            val exitCode = process.waitFor()
+            val success = exitCode == 0 && outputFile.exists() && outputFile.length() > 0L
+            if (!success) {
+                Timber.w("FastDirectDownloader: FFmpeg mux failed (exit=%d)", exitCode)
+            }
+            success
+        }.getOrDefault(false)
     }
 
     /**

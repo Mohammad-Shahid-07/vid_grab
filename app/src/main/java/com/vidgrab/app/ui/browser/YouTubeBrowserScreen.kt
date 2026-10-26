@@ -96,6 +96,7 @@ import com.vidgrab.app.core.webview.YouTubeJsBridge
 import com.vidgrab.app.core.webview.YouTubeJsScripts
 import com.vidgrab.app.ui.downloads.DownloadsScreen
 import com.vidgrab.app.ui.modal.QualityPickerBottomSheet
+import com.vidgrab.app.ui.modal.QualityPickerUiState
 import com.vidgrab.app.ui.modal.QualityPickerViewModel
 import com.vidgrab.app.ui.settings.SettingsScreen
 import com.vidgrab.app.ui.theme.AppTheme
@@ -132,6 +133,7 @@ fun YouTubeBrowserScreen(
     qualityPickerViewModel: QualityPickerViewModel = viewModel()
 ) {
     val context = LocalContext.current
+    val theme = AppTheme.colors
     val queueRepository = remember { QueueRepository.getInstance(context) }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var currentNavScreen by remember { mutableStateOf(BrowserNavScreen.BROWSER) }
@@ -195,6 +197,8 @@ fun YouTubeBrowserScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbarHostState) },
+            containerColor = theme.phoneBg,
+            contentColor = theme.textPrimary,
             topBar = {
                 BrowserTopBar(
                     currentUrl = currentUrl,
@@ -340,9 +344,21 @@ fun YouTubeBrowserScreen(
                                         "document.querySelectorAll('video').forEach(function(v) { try { v.pause(); } catch(e){} });",
                                         null
                                     )
+                                    // The sheet is (or is about to be) visible: stop the injected button spinner.
+                                    evaluateJavascript("if (window.__vidgrabTriggerAck) window.__vidgrabTriggerAck();", null)
                                 }
                                 browserViewModel.onDownloadTriggered(payload)
                                 qualityPickerViewModel.load(payload)
+                            },
+                            onPayloadRefreshed = { payload ->
+                                // Only upgrade an in-flight resolve for the same URL. If the picker
+                                // already showed (Success), the backlog refresh is irrelevant; if it was
+                                // dismissed, we must not re-open it.
+                                val current = qualityPickerViewModel.uiState.value
+                                if (current is QualityPickerUiState.Loading && current.payload.url == payload.url) {
+                                    Timber.i("Refreshing in-flight picker payload for %s", payload.url)
+                                    qualityPickerViewModel.load(payload)
+                                }
                             },
                             onUrlChanged = { newUrl, newTitle ->
                                 browserViewModel.onPageFinished(newUrl, newTitle)

@@ -14,6 +14,8 @@ data class VideoQualityOption(
     val fps: Int = 30,
     val vcodec: String = "H.264",
     val container: String = "mp4",
+    val videoOnlyBytes: Long = 0L,
+    val audioStreamBytes: Long = 0L,
     val estimatedTotalBytes: Long = 0L,
     val formatSelector: String,
     val directStreamUrl: String? = null,
@@ -21,7 +23,7 @@ data class VideoQualityOption(
     val isMuxed: Boolean = false
 ) {
     val formattedSize: String
-        get() = formatBytes(estimatedTotalBytes)
+        get() = formatBytes(if (estimatedTotalBytes > 0L) estimatedTotalBytes else (videoOnlyBytes + audioStreamBytes))
 }
 
 data class AudioQualityOption(
@@ -31,10 +33,44 @@ data class AudioQualityOption(
     val bitrateKbps: Int,
     val estimatedBytes: Long = 0L,
     val formatSelector: String,
-    val directStreamUrl: String? = null
+    val directStreamUrl: String? = null,
+    /** YouTube audio-track identifier (e.g. "en-US.4"); null for legacy single-track responses. */
+    val audioTrackId: String? = null,
+    /** Human readable track name (e.g. "English (US) original"). */
+    val audioTrackName: String? = null,
+    /** ISO language code when known. */
+    val audioLanguage: String? = null,
+    /** NewPipe's AudioTrackType name (ORIGINAL, DUBBED, DESCRIPTIVE, SECONDARY). */
+    val audioTrackType: String? = null,
+    /** True for YouTube's default / original audio track. */
+    val isDefaultTrack: Boolean = false
 ) {
     val formattedSize: String
         get() = formatBytes(estimatedBytes)
+
+    /** Stable key for grouping multiple bitrates of the same physical audio track. */
+    val trackKey: String
+        get() = audioTrackId?.takeIf { it.isNotBlank() }
+            ?: audioTrackName?.takeIf { it.isNotBlank() }
+            ?: "default"
+
+    /**
+     * Identifies one concrete audio stream (track + container + bitrate). Used by the picker so a
+     * user can mux any specific audio stream into any video stream, IDM style.
+     */
+    val streamKey: String
+        get() = "$trackKey|${extension.lowercase()}|$bitrateKbps"
+
+    /**
+     * True when this is the uploader's original/default track. Some player responses omit the
+     * audioTrack object for the original track, so the absence of a track id is also treated
+     * as original unless a track name explicitly says otherwise.
+     */
+    val isOriginalOrDefault: Boolean
+        get() = isDefaultTrack ||
+            audioTrackType.equals("ORIGINAL", ignoreCase = true) ||
+            audioTrackName?.contains("original", ignoreCase = true) == true ||
+            (audioTrackId == null && audioTrackName == null)
 }
 
 data class BatchPlaylistItem(
@@ -132,6 +168,16 @@ data class DownloadRequestSpec(
     val directVideoUrl: String? = resolvedVideoStreamUrl,
     val directAudioUrl: String? = resolvedAudioStreamUrl,
     val isDirectMuxed: Boolean = false,
+    /** Preferred video codec family ("H.264", "VP9", "AV1", or null for Auto). */
+    val videoCodecPreference: String? = null,
+    /** Exact audio track id to mux with the video (null = automatic/default). */
+    val mergeAudioTrackId: String? = null,
+    val mergeAudioTrackName: String? = null,
+    val mergeAudioLanguage: String? = null,
+    /** Preferred container for the muxed audio stream ("m4a", "opus", or null for Auto). */
+    val mergeAudioExtension: String? = null,
+    /** Exact bitrate of the chosen merge-audio stream, when the user picked one. */
+    val mergeAudioBitrateKbps: Int? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 

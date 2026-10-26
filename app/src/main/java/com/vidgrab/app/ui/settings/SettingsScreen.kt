@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Refresh
@@ -66,6 +68,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vidgrab.app.core.engine.DownloadEngineMode
+import com.vidgrab.app.core.engine.DownloadEnginePreferences
 import com.vidgrab.app.core.engine.YtDlpUpdater
 import com.vidgrab.app.core.webview.AdBlockEngine
 import kotlinx.coroutines.launch
@@ -102,6 +106,7 @@ fun SettingsScreen(
     val isAdBlockEnabled by AdBlockEngine.isAdBlockEnabled.collectAsState()
     val isBackgroundPlayEnabled by AdBlockEngine.isBackgroundPlayEnabled.collectAsState()
     val maxConcurrent by AdBlockEngine.maxConcurrentDownloads.collectAsState()
+    val engineMode by DownloadEnginePreferences.mode.collectAsState()
 
     val powerManager = remember { context.getSystemService(Context.POWER_SERVICE) as? PowerManager }
     var isBatteryIgnoring by remember {
@@ -117,6 +122,7 @@ fun SettingsScreen(
     Scaffold(
         modifier = Modifier.navigationBarsPadding(),
         containerColor = currentTheme.phoneBg,
+        contentColor = currentTheme.textPrimary,
         topBar = {
             TopAppBar(
                 title = {
@@ -375,7 +381,117 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // SECTION 1: DOWNLOAD ENGINE CONCURRENCY
+            // SECTION 1: GLOBAL DOWNLOAD ENGINE (one app-wide setting, never per download)
+            SettingsCard(title = "Download Engine", icon = Icons.Default.Bolt) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "One choice for every download. VidGrab never asks you to pick an engine per video.",
+                        fontSize = 12.sp,
+                        color = currentTheme.textSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    listOf(
+                        DownloadEngineMode.FAST to (
+                            "Fast" to
+                                "Parallel segmented downloads. Recommended for almost every video."
+                            ),
+                        DownloadEngineMode.COMPATIBILITY to (
+                            "Compatibility" to
+                                "Older extractor with a slower transfer. Use it only when the Fast engine cannot finish a video."
+                            )
+                    ).forEach { (mode, labels) ->
+                        val selected = engineMode == mode
+                        val (title, subtitle) = labels
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { DownloadEnginePreferences.setMode(context, mode) },
+                            color = if (selected) currentAccent.color.copy(alpha = 0.10f) else currentTheme.pillTrackBg,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) currentAccent.color else currentTheme.dividerColor
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .border(
+                                            BorderStroke(
+                                                2.dp,
+                                                if (selected) currentAccent.color else currentTheme.textMuted
+                                            ),
+                                            CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (selected) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(9.dp)
+                                                .clip(CircleShape)
+                                                .background(currentAccent.color)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(10.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = title,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 14.sp,
+                                            color = currentTheme.textPrimary
+                                        )
+                                        if (mode == DownloadEngineMode.FAST) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "RECOMMENDED",
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = currentAccent.color,
+                                                modifier = Modifier
+                                                    .background(
+                                                        currentAccent.color.copy(alpha = 0.14f),
+                                                        RoundedCornerShape(4.dp)
+                                                    )
+                                                    .padding(horizontal = 5.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = subtitle,
+                                        fontSize = 11.sp,
+                                        color = currentTheme.textSecondary
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+
+                    Text(
+                        text = "If the selected engine fails, the other engine runs automatically, then yt-dlp. You can switch this at any time; running downloads keep their engine.",
+                        fontSize = 10.sp,
+                        color = currentTheme.textMuted
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // SECTION 2: DOWNLOAD ENGINE CONCURRENCY
             SettingsCard(title = "Download Engine Concurrency", icon = Icons.Default.Speed) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -388,7 +504,7 @@ fun SettingsScreen(
                     Text(
                         text = "Controls simultaneous downloads (2-3 recommended, up to 5).",
                         fontSize = 12.sp,
-                        color = Color(0xFF7F7875)
+                        color = currentTheme.textSecondary
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -574,7 +690,7 @@ fun SettingsScreen(
                             )
                         }
 
-                        val badgeColor = if (updateState.isUpdating) currentAccent.color else Color(0xFF2C6954)
+                        val badgeColor = if (updateState.isUpdating) currentAccent.color else currentTheme.successGreen
                         Text(
                             text = if (updateState.isUpdating) "UPDATING" else "READY",
                             fontSize = 10.sp,

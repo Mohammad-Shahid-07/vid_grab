@@ -5,6 +5,12 @@ import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -13,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,10 +40,10 @@ import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
@@ -58,6 +65,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -86,24 +94,31 @@ fun DownloadsScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
 
-    val pausedTasks = remember(allTasks) {
-        allTasks.filter { it.status == TaskStatus.PAUSED }.sortedBy { it.createdAt }
+    val unfinishedTasks = remember(allTasks) {
+        allTasks.filter { it.status != TaskStatus.COMPLETED && it.status != TaskStatus.CANCELLED }
+            .sortedWith(
+                compareByDescending<DownloadTaskEntity> { it.queueGroup }
+                    .thenBy { it.queueIndex }
+                    .thenBy { it.createdAt }
+            )
     }
 
-    // Active downloading tasks: strictly sort so that DOWNLOADING / MERGING are at the VERY TOP, fixed by createdAt
+    val pausedTasks = remember(allTasks) {
+        allTasks.filter { it.status == TaskStatus.PAUSED }
+            .sortedWith(
+                compareByDescending<DownloadTaskEntity> { it.queueGroup }
+                    .thenBy { it.queueIndex }
+                    .thenBy { it.createdAt }
+            )
+    }
+
     val activeAndPendingTasks = remember(allTasks) {
         allTasks
             .filter { it.status in listOf(TaskStatus.DOWNLOADING, TaskStatus.MERGING, TaskStatus.EXPANDING, TaskStatus.PENDING) }
             .sortedWith(
-                compareBy<DownloadTaskEntity> { task ->
-                    when (task.status) {
-                        TaskStatus.DOWNLOADING -> 1
-                        TaskStatus.MERGING -> 2
-                        TaskStatus.EXPANDING -> 3
-                        TaskStatus.PENDING -> 4
-                        else -> 5
-                    }
-                }.thenBy { task -> task.createdAt }
+                compareByDescending<DownloadTaskEntity> { it.queueGroup }
+                    .thenBy { it.queueIndex }
+                    .thenBy { it.createdAt }
             )
     }
 
@@ -113,6 +128,7 @@ fun DownloadsScreen(
     Scaffold(
         modifier = Modifier.navigationBarsPadding(),
         containerColor = theme.phoneBg,
+        contentColor = theme.textPrimary,
         topBar = {
             TopAppBar(
                 title = {
@@ -310,7 +326,7 @@ fun DownloadsScreen(
             // Tab Content
             when (selectedTab) {
                 0 -> {
-                    // All Tasks (Active & Pending at the top, then Paused, then Completed)
+                    // All Tasks: Unfinished tasks preserve order regardless of pause/resume, followed by completed
                     if (allTasks.isEmpty()) {
                         EmptyDownloadsPlaceholder("No downloads yet")
                     } else {
@@ -318,7 +334,7 @@ fun DownloadsScreen(
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(activeAndPendingTasks, key = { "active_${it.id}" }) { task ->
+                            items(unfinishedTasks, key = { it.id }) { task ->
                                 DownloadCard(
                                     task = task,
                                     onPause = { queueRepository.pauseTask(task.id) },
@@ -326,15 +342,7 @@ fun DownloadsScreen(
                                     onCancel = { queueRepository.cancelTask(task.id) }
                                 )
                             }
-                            items(pausedTasks, key = { "paused_${it.id}" }) { task ->
-                                DownloadCard(
-                                    task = task,
-                                    onPause = { },
-                                    onResume = { queueRepository.resumeTask(task.id) },
-                                    onCancel = { queueRepository.deleteTask(task.id) }
-                                )
-                            }
-                            items(completedTasks, key = { "completed_${it.id}" }) { task ->
+                            items(completedTasks, key = { it.id }) { task ->
                                 CompletedDownloadCard(
                                     task = task,
                                     onOpen = { openMediaFile(context, task.outputFileUri) },
@@ -397,12 +405,96 @@ fun DownloadsScreen(
                                     task = task,
                                     onPause = { },
                                     onResume = { queueRepository.resumeTask(task.id) },
-                                    onCancel = { queueRepository.deleteTask(task.id) }
+                                    onCancel = { queueRepository.cancelTask(task.id) }
                                 )
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun IdmMultiConnectionProgressBar(
+    progressPercent: Float,
+    isConnecting: Boolean,
+    activeConnections: Int,
+    segmentProgressCsv: String,
+    accentColor: Color,
+    trackColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val barHeight = 4.dp
+    val barShape = RoundedCornerShape(2.dp)
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(barHeight)
+            .clip(barShape)
+            .background(trackColor)
+    ) {
+        if (isConnecting) {
+            val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+            val sweepOffset by infiniteTransition.animateFloat(
+                initialValue = -0.4f,
+                targetValue = 1.4f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(1200, easing = LinearEasing),
+                    repeatMode = RepeatMode.Restart
+                ),
+                label = "offset"
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(0.35f)
+                    .graphicsLayer {
+                        translationX = size.width * (sweepOffset / 0.35f)
+                    }
+                    .background(accentColor, barShape)
+            )
+        } else {
+            val segments = remember(segmentProgressCsv) {
+                if (segmentProgressCsv.isNotBlank()) {
+                    segmentProgressCsv.split(",").mapNotNull { it.trim().toFloatOrNull() }
+                } else emptyList()
+            }
+            // Segmented rendering is only meaningful while multiple sockets are actually active.
+            // Single-connection / merging phases fall back to the plain determinate bar.
+            val showSegments = activeConnections > 1 && segments.size > 1
+
+            if (showSegments) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    segments.forEach { segProgress ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .background(trackColor)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth(segProgress.coerceIn(0f, 1f))
+                                    .background(accentColor)
+                            )
+                        }
+                    }
+                }
+            } else {
+                val clampedProgress = (progressPercent / 100f).coerceIn(0f, 1f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(clampedProgress)
+                        .background(accentColor, barShape)
+                )
             }
         }
     }
@@ -455,6 +547,7 @@ fun DownloadCard(
     val statusDisplayText = when {
         task.status == TaskStatus.MERGING -> "Merging audio and video..."
         task.status == TaskStatus.PAUSED -> "Paused"
+        task.status == TaskStatus.FAILED -> "Download interrupted • Tap retry"
         isConnecting -> {
             val totalSuffix = if (totalStr.isNotEmpty()) " • $totalStr" else ""
             if (elapsedMs < 5000L) "Connecting$totalSuffix..." else "Download will start in a moment$totalSuffix..."
@@ -465,7 +558,7 @@ fun DownloadCard(
             if (sizeProgressStr.isNotEmpty()) parts.add(sizeProgressStr)
             parts.add("($pct)")
             if (sanitizedSpeed.isNotBlank()) parts.add(sanitizedSpeed)
-            parts.joinToString(" • ")
+            parts.filter { it.isNotBlank() }.joinToString(" • ")
         }
     }
 
@@ -514,6 +607,7 @@ fun DownloadCard(
                         TaskStatus.DOWNLOADING -> accent.color
                         TaskStatus.MERGING -> theme.successGreen
                         TaskStatus.PAUSED -> theme.textSecondary
+                        TaskStatus.FAILED -> theme.errorRed
                         else -> theme.textSecondary
                     }
 
@@ -524,6 +618,7 @@ fun DownloadCard(
                                 TaskStatus.MERGING -> "MERGING"
                                 TaskStatus.PAUSED -> "PAUSED"
                                 TaskStatus.EXPANDING -> "EXPANDING"
+                                TaskStatus.FAILED -> "FAILED"
                                 else -> "QUEUED"
                             },
                             fontSize = 9.sp,
@@ -554,9 +649,14 @@ fun DownloadCard(
                     IconButton(onClick = onPause, modifier = Modifier.size(30.dp)) {
                         Icon(Icons.Default.Pause, contentDescription = "Pause", tint = accent.color, modifier = Modifier.size(18.dp))
                     }
-                } else if (task.status == TaskStatus.PAUSED) {
+                } else if (task.status == TaskStatus.PAUSED || task.status == TaskStatus.FAILED) {
                     IconButton(onClick = onResume, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = accent.color, modifier = Modifier.size(18.dp))
+                        Icon(
+                            if (task.status == TaskStatus.FAILED) Icons.Default.Refresh else Icons.Default.PlayArrow,
+                            contentDescription = "Resume",
+                            tint = accent.color,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
                 IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
@@ -566,27 +666,15 @@ fun DownloadCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Radiant Progress Bar: Indeterminate when connecting, Determinate when bytes stream
-            if (isConnecting) {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp)),
-                    color = accent.color,
-                    trackColor = theme.pillTrackBg
-                )
-            } else {
-                LinearProgressIndicator(
-                    progress = { task.progressPercent / 100f },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp)),
-                    color = accent.color,
-                    trackColor = theme.pillTrackBg
-                )
-            }
+            // IDM-Style Multi-Connection Turbo Progress Bar (Zero stop dot artifact)
+            IdmMultiConnectionProgressBar(
+                progressPercent = task.progressPercent,
+                isConnecting = isConnecting,
+                activeConnections = task.activeConnections,
+                segmentProgressCsv = task.segmentProgressCsv,
+                accentColor = accent.color,
+                trackColor = theme.pillTrackBg
+            )
 
             Spacer(modifier = Modifier.height(6.dp))
 
@@ -674,9 +762,12 @@ fun CompletedDownloadCard(
                     overflow = TextOverflow.Ellipsis,
                     color = theme.textPrimary
                 )
-                Spacer(modifier = Modifier.height(3.dp))
+                val metaParts = listOfNotNull(
+                    task.outputExt.takeIf { it.isNotBlank() }?.uppercase(),
+                    formatBytes(task.totalBytes).takeIf { it.isNotBlank() }
+                )
                 Text(
-                    text = "${task.outputExt.uppercase()} • ${formatBytes(task.totalBytes)}",
+                    text = metaParts.joinToString(" • "),
                     fontSize = 11.sp,
                     color = theme.textSecondary
                 )

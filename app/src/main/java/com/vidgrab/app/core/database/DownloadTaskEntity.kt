@@ -58,6 +58,18 @@ data class DownloadTaskEntity(
     val directVideoUrl: String? = null,
     val directAudioUrl: String? = null,
     val isDirectMuxed: Boolean = false,
+    val videoCodecPreference: String? = null,
+    val mergeAudioTrackId: String? = null,
+    val mergeAudioTrackName: String? = null,
+    val mergeAudioLanguage: String? = null,
+    val mergeAudioExtension: String? = null,
+    val mergeAudioBitrateKbps: Int? = null,
+    val queueGroup: Long = System.currentTimeMillis(),
+    val queueIndex: Int = 0,
+    val videoBytes: Long = 0L,
+    val audioBytes: Long = 0L,
+    val activeConnections: Int = 8,
+    val segmentProgressCsv: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )

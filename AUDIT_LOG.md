@@ -1846,13 +1846,320 @@
 
 ### 2. Verification & Build
 - `.\gradlew.bat compileDebugKotlin`: `BUILD SUCCESSFUL in 47s` (0 errors, 0 warnings).
-- `.\gradlew.bat assembleDebug`: `BUILD SUCCESSFUL in 32s`.
-- Streamed and installed `app-armeabi-v7a-debug.apk` to Samsung Galaxy SM-M136B (`RZCW415JDCZ`).
-- Launched `com.vidgrab.app.debug/com.vidgrab.app.MainActivity` cleanly.
+## Audit Entry - October 24, 2026: Turbo Downloader, Order Stability, Drag-and-Drop, and Unified Progress Engine
 
+### 1. Root Cause Analysis & Problem Scope
+1. **Playlist Drag & Drop Breakdown**:
+   - `QualityPickerBottomSheet.kt` keyed `pointerInput` on `(index, state.orderedBatchItems.size)`. Whenever an item swapped slots, its index mutated, immediately tearing down and disposing the gesture coroutine mid-drag.
+   - Parent `Column.verticalScroll(...)` intercepted vertical pointer events from the nested drag handle.
+2. **Downloads Page Ordering Instability**:
+   - Tab 0 previously partitioned tasks into two discrete lists: `activeAndPendingTasks` and `pausedTasks`. When a download paused or resumed, its status change caused it to bounce between these distinct list blocks.
+3. **Material 3 Expressive Progress Stop Dot & Trailing Bullets**:
+   - Material 3's `LinearProgressIndicator` drew an Expressive `drawStopIndicator` dot at the tail of the track by default.
+   - Text formatters in `DownloadCard` and `CompletedDownloadCard` joined strings containing empty elements, leaving trailing `" • "` bullets.
+4. **Separate Audio/Video Progress & Size Flip-Flop**:
+   - Multi-stream downloads (adaptive video + audio) reported video stream size during stage 1, shrank to audio stream size in stage 2, and reset progress percent, degrading UX before muxing.
+5. **IDM-Style Turbo Multi-Connection Streaming**:
+   - Single-threaded direct downloads were bottlenecked by server per-connection bandwidth limits. Needed true segmented concurrent range requests (8 parallel connections per stream) with UI connection badges.
+6. **Combined Audio + Video Size in Quality Picker**:
+   - Options previously displayed video-only byte sizes, hiding the true combined footprint on disk.
 
+### 2. Solutions Implemented & Architectural Changes
+1. **Engine Layer & Multi-Connection Turbo (`FastDirectDownloader.kt` & `DownloadEngineExecutor.kt`)**:
+   - Built an IDM-style 8-connection concurrent segmented streaming engine using a dedicated OkHttp Dispatcher (64 max, 32 per host).
+   - Validated HTTP 206 Partial Content headers to prevent corrupted offset writing if a server disregards `Range`.
+   - Maintained pause-resuming segment tracking (`.seg0`, `.seg1`...) and unified byte accumulation across streams.
+   - Implemented monotonic dual-stream progress tracker in `DownloadEngineExecutor`: `progressPercent = ((completedStreamsBytes + currentStreamDownloadedBytes) / totalOverallBytes) * 100f`. Total size remains strictly non-decreasing.
+2. **Database & Room Schema v6 (`DownloadTaskEntity.kt`, `AppDatabase.kt`, `DownloadDao.kt`)**:
+   - Added `queueGroup`, `queueIndex`, `videoBytes`, `audioBytes`, `activeConnections`, and `segmentProgressCsv`.
+   - Stable ordering query: `CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END ASC, queueGroup DESC, queueIndex ASC, createdAt ASC`.
+   - Added `resetInterruptedTasks()` to recover interrupted tasks across app restarts.
+3. **Queue & Metadata Layer (`QueueRepository.kt`, `DualEngineMetadataResolver.kt`)**:
+   - Assigned `queueGroup` (timestamp bucket) and `queueIndex` for playlists and single downloads to guarantee deterministic sequence.
+   - Calculated combined sizes ($Video + Audio$) for all video options in `DualEngineMetadataResolver`. Added `formattedBreakdown` ("42 MB (38 MB Video + 4 MB Audio)").
+   - Handled progressive muxed videos (e.g., 360p itag 18) by setting `isMuxed = true` and suppressing duplicate separate audio streams.
+4. **UI Layer (`QualityPickerBottomSheet.kt` & `DownloadsScreen.kt`)**:
+   - Fixed playlist drag-and-drop: keyed Compose elements and gestures strictly on `key(item.url)` and `pointerInput(item.url)`. Disabled parent scroll while dragging (`enabled = draggingItemUrl == null`). Added visual lift animation and micro Up/Down buttons.
+   - Stabilized Downloads Tab 0: unified active and paused downloads into `unfinishedTasks` sorted stably by `(queueGroup, queueIndex, createdAt)` using key `{ it.id }`.
+   - Replaced `LinearProgressIndicator` with `IdmMultiConnectionProgressBar`: custom Box-based layout without stop indicator dots, featuring parallel multi-connection segment fills and `⚡ $activeConnections Connections` badge.
+   - Sanitized text joiners across all cards to eliminate trailing `" • "` bullets.
 
+### 3. Verification & Build
+- `.\gradlew.bat compileDebugKotlin`: `BUILD SUCCESSFUL in 1m 12s` (0 errors).
+- `.\gradlew.bat assembleDebug`: `BUILD SUCCESSFUL in 45s` (Debug APK generated at `app\build\outputs\apk\debug\app-debug.apk`).
 
+---
 
+## Audit Entry - October 24, 2026 (Follow-Up): Integrity Hardening of the Turbo Downloader, Queue Ordering & Notification Lifecycle
 
+- **Date/Time**: 2026-10-24T23:10:00+05:30
+- **Scope**: Independent audit of the uncommitted Turbo Downloader milestone (Entry 056), repairing correctness defects that survived the first pass: data-corruption paths in the segmented downloader, a dead FFmpeg fallback, fake segment CSVs on the yt-dlp path, lost playlist ordering on lazy expansion, zero-byte playlist size estimates, and orphaned per-task notifications.
 
+### 1. Defects Found During Audit & Fixes Applied
+
+1. **[`FastDirectDownloader.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/engine/FastDirectDownloader.kt) — File Integrity & Fallback Repair**:
+   - **Corruptible in-place writes**: Segmented downloads previously wrote directly into the final output file. A crash or cancellation mid-write left a file whose name promised a complete video. All multistream outputs now download into `.part` artifacts and rename atomically only after mux/verification; `finally` blocks delete every temp artifact so half-files are never discoverable as finished media.
+   - **Unvalidated range reads**: A ranged request now must return HTTP `206`; the `Content-Range` start must equal the requested `startByte`; and the read byte count is compared against `expectedBytes`, so a silently truncated segment can never be recorded as complete (previously only `startByte > 0` was checked and short reads passed silently).
+   - **Swallowed cancellation**: `CancellationException` from pause is rethrown instead of being caught by the generic retry path, so paused tasks stop immediately rather than retrying all segments.
+   - **Dead FFmpeg fallback**: `muxViaFfmpeg()` was a placeholder that built an empty `YoutubeDLRequest(emptyList())` and never ran FFmpeg. It now executes the bundled `libffmpeg.so` directly via `ProcessBuilder` with `LD_LIBRARY_PATH` set to the app's native library dir, `-c copy -movflags +faststart`, exit-code validation, and deletion of the failed output before retry.
+
+2. **[`DownloadEngineExecutor.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/engine/DownloadEngineExecutor.kt) — Honest Telemetry on the yt-dlp Path**:
+   - Removed the hardcoded `segmentProgressCsv = "0.95,0.9,..."` fake segments that made the UI draw fabricated multi-connection bars for yt-dlp tasks; the CSV is now empty and real segments only come from `FastDirectDownloader`.
+   - `activeConnections` now reports the actual `-N` concurrency of the running attempt (0 while connecting), instead of a constant.
+
+3. **[`QueueRepository.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/queue/QueueRepository.kt) — Ordering & Sizing**:
+   - Lazy playlist expansion (`expandAndEnqueuePlaylist`) and its single-task fallback now assign `queueGroup`/`queueIndex`, matching the bulk path — previously these rows landed with `queueGroup = 0` and sorted arbitrarily against other batches.
+   - All items of one request (batch or single) share one `queueGroupTimestamp`, guaranteeing that on-screen playlist order is preserved 1:1 into the download queue.
+   - `estimateItemBytes()` no longer returns `0L`; it now derives duration-aware estimates from a per-height bitrate table (2160p→144p) plus a 128 kbps audio track, so playlist rows never display blank/zero sizes.
+
+4. **[`DownloadDao.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/database/DownloadDao.kt) & State Hygiene**:
+   - Added `countInterruptedTasks()` so the startup recovery can report and act only when rows were actually stranded.
+   - `pauseAllTasks` now also pauses `EXPANDING` tasks; `markCompleted` clears `speedText`, `activeConnections`, and `segmentProgressCsv`; `resetForRetry` resets progress, speed, connection count, and CSV — no stale telemetry on a fresh attempt.
+   - `cancelTask` deletes the row (matching the queries' `status != 'CANCELLED'` filter) instead of leaving invisible tombstone rows.
+
+5. **Notification Lifecycle ([`DownloadNotificationManager.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/worker/DownloadNotificationManager.kt), [`DownloadQueueWorker.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/worker/DownloadQueueWorker.kt), [`QueueRepository.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/queue/QueueRepository.kt))**:
+   - Added `postStatusNotification()` and `cancelProgressNotification()` helpers (all calls wrapped in `runCatching` so notification IPC failures never crash a download).
+   - Foreground progress updates now use the per-task notification ID (`getNotificationId(task.id)`), and progress notifications are cancelled on completion, failure, pause-and-delete, and explicit delete — eliminating the shared-ID `1001` collisions and ghost notifications left behind by finished tasks.
+   - `resetInterruptedTasks()` counts first, resets `DOWNLOADING`/`MERGING`/`EXPANDING` back to `PENDING`, and restarts the queue worker only when work was actually recovered.
+
+6. **UI & Preset Consistency ([`DownloadsScreen.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/downloads/DownloadsScreen.kt), [`FormatSelectorBuilder.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/extractor/FormatSelectorBuilder.kt))**:
+   - The IDM segmented bar renders only when `activeConnections > 1 && segments.size > 1`; single-socket and merging phases fall back to the plain determinate bar (no fake parallelism).
+   - `buildStandardPresets()` now populates `videoOnlyBytes`/`audioStreamBytes` via a shared `videoPreset()` helper, so offline/fallback presets show the same combined-size breakdown as resolver-derived options.
+
+### 2. Build & Verification Results
+- **Command Executed**: `.\gradlew.bat :app:assembleDebug --console=plain`
+- **Compilation Output**: `BUILD SUCCESSFUL` (0 errors; incremental build fully up-to-date after the final edit set).
+- **Runtime Verification Status**: PENDING ON-DEVICE. No emulator/device is attached to this environment, so drag-and-drop feel, pause/resume row stability, merged-size display during mux, and the connection badge still require a live install pass.
+- **Known Trade-off**: Room schema v6 uses `fallbackToDestructiveMigration()` — existing queue/history rows are wiped once on upgrade to v6.
+
+### 3. Supervisor Review Checklist
+- [x] No direct writes to final output files in `FastDirectDownloader`; all outputs are `.part` + atomic rename.
+- [x] Ranged reads validated by HTTP 206 + `Content-Range` start + byte-count.
+- [x] No hardcoded `segmentProgressCsv`; connection badges reflect real socket counts only.
+- [x] Playlist on-screen order preserved into DB via shared `queueGroup` + `queueIndex`.
+- [x] No `0L` size estimates for playlist items.
+- [x] Per-task notifications cancelled on completion/failure/cancel/delete.
+- [x] `:app:assembleDebug` compiles clean; device validation outstanding.
+
+---
+
+## Audit Entry - October 24, 2026 (UI/UX Round): Breakdown Removal, Connection Badge Removal, Drag Destination Preview, YouTube-Native Injected Buttons & Instant Picker Feedback
+
+- **Date/Time**: 2026-10-24T23:34:00+05:30
+- **Scope**: User-directed UI/UX corrections across the quality picker bottom sheet, downloads screen, injected WebView layer, and the WebView-to-Compose trigger pipeline. Five approved fixes: (1) remove the "Format & Stream Breakdown" card, (2) remove the "N Connections" badge, (3) make drag-and-drop visibly show the drop destination, (4) restyle injected download buttons to match YouTube's native UI, (5) show a loader instantly when the picker popup opens from any entry point.
+
+### 1. Implementation Details (file, rationale, code)
+
+1. **[`FormatModels.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/extractor/FormatModels.kt) - Breakdown Model Removal**: Deleted `formattedVideoSize`, `formattedAudioSize`, and `formattedBreakdown` from `VideoQualityOption`. Only `formattedSize` (combined) remains, so the sheet can no longer render component math; combined sizes are unchanged by design.
+
+2. **[`QualityPickerBottomSheet.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/modal/QualityPickerBottomSheet.kt) - Breakdown Card Removed + Drag Destination Preview**:
+   - Removed the "Format & Stream Breakdown" `Surface` block (and repaired the `if (!isBatch)` / `else` branch braces that the removal initially disturbed).
+   - Added `draggingFromIndex` / `draggingTargetIndex` (`mutableIntStateOf`), a `LocalHapticFeedback` handle, and list-level slot measurement (`listRowHeightPx`, `listSlotHeightPx`) fed by each row's `onSizeChanged`.
+   - Destination slot: a `drawBehind` layer on the list `Column` paints an accent 10% fill + 1.5dp accent stroke placeholder, animated to the live target slot via `animateFloatAsState(tween(140))`.
+   - Gap opening: every row between the drag origin and the live target translates one slot height (`-slot` upward / `+slot` downward) with the same 140ms tween, physically opening a hole where the item will land.
+   - Live target tracking during `onVerticalDrag` (`currentIndex + round(dragOffsetY / slot)`, coerced to list bounds) with a `HapticFeedbackType.TextHandleMove` tick only when the target actually changes; `onDragEnd` commits via `onMoveItem(currentIndex, draggingTargetIndex)`; `onDragCancel` and end both reset all drag state.
+   - Main list scroll is disabled while dragging (`enabled = draggingItemUrl == null`); gestures remain keyed to `item.url` and `rememberUpdatedState` keeps index/count closures fresh after recomposition.
+
+3. **[`DownloadsScreen.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/downloads/DownloadsScreen.kt) - Connection Badge Removed**: Deleted the `"⚡ ${task.activeConnections} Connections"` chip. The segmented IDM progress bar (real per-segment data) is intentionally kept; only the text badge was removed per user request.
+
+4. **[`YouTubeJsScripts.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/webview/YouTubeJsScripts.kt) - YouTube-Native Button + Instant Trigger**:
+   - CSS rewritten from the floating dark circle to a YouTube-native pill: `.vg-btn` = 36px height, 18px radius, `--yt-spec-badge-chip-background` fill, `--yt-spec-text-primary` text, Roboto 500 14px, hover/active states mapped to `--yt-spec-mono-tonal-hover/active` with a scale-down press. `.vg-compact` renders a circular icon-only variant inside `ytm-compact-video-renderer` / `ytm-compact-playlist-renderer`.
+   - Icon replaced with YouTube's own filled download glyph (`M17 18v1H6v-1h11zm-.5-6.6-.7-.7-3.3 3.3V4h-1v10l-3.3-3.3-.7.7 4.5 4.5 4.5-4.5z`) plus a "Download" label and an inline `.vg-spinner`.
+   - `handleDownloadTrigger` now debounces (700ms via `btn.__vgLastTrigger`, because `touchend` and `click` both fire on Android WebView), flips the button into a spinner state instantly (`setBtnLoading`, exposed as `btn.__vgSetLoading`, with a 4s safety auto-clear), and fires `onDownloadClicked` synchronously with the already-in-memory inline player response. The former blocking `__vidgrabFetchDirectPlayerJson` await (which delayed the popup by seconds) now runs afterward in the background and reports through the new `onDownloadPayloadRefreshed` bridge.
+   - Added `window.__vidgrabTriggerAck`, defined before the final scan calls so it survives the idempotency guard; native calls it the moment the sheet is visible to stop the button spinner deterministically.
+
+5. **[`YouTubeJsBridge.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/webview/YouTubeJsBridge.kt) - Refresh Interface**: New `onPayloadRefreshed` constructor callback and `@JavascriptInterface onDownloadPayloadRefreshed(url, itemType, title, inlinePlayerJson, durationSeconds, playlistItemsJson)`. It sanitizes the URL the same way as `onDownloadClicked` (playlist ID extraction / `sanitizeMediaUrl`), ignores blank JSON, and posts the rebuilt `DownloadTriggerPayload` to the main looper.
+
+6. **[`YouTubeBrowserScreen.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/browser/YouTubeBrowserScreen.kt) - Guarded Refresh + Ack Wiring**: `onPayloadRefreshed` reloads the picker only when `uiState.value is QualityPickerUiState.Loading && current.payload.url == payload.url`; otherwise it is dropped. `onDownloadTriggered` now also evaluates `if (window.__vidgrabTriggerAck) window.__vidgrabTriggerAck();` on the WebView right after pausing playback.
+
+### 2. Architecture & State Flow
+
+- **Trigger flow (new)**: tap -> debounce -> button spinner -> `onDownloadClicked` with inline JSON (synchronous) -> Compose `qualityPickerViewModel.load(payload)` sets `Loading` -> sheet visible immediately with its "Resolving Format Options..." loader -> ack clears the button spinner. In parallel, the WebView fetches a fresher direct player response; if the picker is still `Loading` for the same URL, the payload is upgraded (full format ladder); if it is already `Success`, the refresh is ignored (user selections are never clobbered); if the sheet was dismissed, it is never re-opened.
+- **Drag flow (new)**: drag start records origin/target -> per-frame offset clamps to list bounds -> target slot derives from offset/slotHeight -> rows between origin and target tween to open a gap -> placeholder paints under the target slot -> haptic tick per slot change -> release commits `moveBatchItem(from, to)` -> state resets on end/cancel.
+
+### 3. Edge Cases & Anti-Bot/OS Defenses Covered
+
+- Kotlin raw string safety: no `$` characters introduced into `INJECTION_SCRIPT` (no accidental string-template interpolation).
+- Duplicate-event defense: 700ms debounce prevents the Android WebView `touchend`+`click` double trigger (one tap = one popup).
+- Stuck-spinner defense: 4s auto-clear timer plus the native ack; ack is null-checked in JS so older/newer script versions cannot throw.
+- Race defense: refresh can never resurrect a dismissed sheet or override a resolved one (Loading + same-URL guard).
+- Theming: injected styles use YouTube's `--yt-spec-*` custom properties with sane fallbacks, so the pill follows YouTube light/dark themes instead of hardcoded colors.
+- Drag: placeholder geometry measured from real row heights (not assumed constants); scrolling disabled mid-drag to prevent coordinate drift; state fully reset on both commit and cancel paths.
+
+### 4. Build & Verification Results
+
+- **Command Executed**: `.\gradlew.bat :app:assembleDebug --console=plain`
+- **Compilation Output**: `BUILD SUCCESSFUL in 35s` (0 errors; only the pre-existing deprecated `WebSettings.databaseEnabled` warning).
+- **APK Outputs**: regenerated at 23:33 local - `app-arm64-v8a-debug.apk` (126.1 MB), `app-armeabi-v7a-debug.apk` (118.9 MB), `app-x86_64-debug.apk` (129.1 MB), `app-universal-debug.apk` (287.0 MB).
+- **Runtime Verification Status**: BLOCKED - `adb devices` reports no attached device or emulator, and no mDNS wireless-debugging service is discoverable; the phone must be reconnected before an install pass. Last known target device: Samsung SM-M136B (RZCW415JDCZ), so `app-arm64-v8a-debug.apk` is the intended install artifact.
+
+### 5. Supervisor Review Checklist
+
+- [x] No "Format & Stream Breakdown" string or model properties remain anywhere in app source.
+- [x] No "Connections" badge remains; segmented IDM bar retained.
+- [x] Drag visibly opens a gap and paints an accent-tinted destination slot; commit only on release; haptic per slot change.
+- [x] Injected buttons use YouTube `--yt-spec-*` theming, native glyph, pill label, compact circular variant in compact renderers.
+- [x] One tap = one popup (debounce), instant button spinner, instant sheet loader, ack + timeout cleanup.
+- [x] Background payload refresh applies only to an in-flight same-URL `Loading` state.
+- [x] `:app:assembleDebug` compiles clean; on-device validation pending device reconnection.
+
+---
+
+## Audit Entry - October 24, 2026 (Correction Round): Icon-Only Injected Button, Explicit Theme Colors & 5-Minute Picker Result Cache
+
+- **Date/Time**: 2026-10-24T23:50:00+05:30
+- **Scope**: User-reported defects from the first on-device run of the UI/UX round: (1) the injected "Download" pill rendered as a black word on a black background inside card contexts, and the user wanted an icon-only button; (2) closing the quality picker by accident and re-tapping download re-ran the full resolution (and its network requests) instead of reusing the previous result. Both fixed and reinstalled on the device.
+
+### 1. Fixes
+
+1. **[`YouTubeJsScripts.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/webview/YouTubeJsScripts.kt) - Icon-Only Button with Explicit Theme Colors**:
+   - Root cause of black-on-black: `.vg-btn` styled itself from YouTube page CSS variables (`--yt-spec-badge-chip-background`, `--yt-spec-text-primary`, `--yt-spec-mono-tonal-*`). In the shadow-DOM card contexts where the buttons are injected these custom properties did not resolve to the active theme, so the fallbacks (`rgba(128,128,128,0.15)` background, `#0f0f0f` text) produced dark-on-dark rendering. The label was also visible when the user wanted an icon only.
+   - The button is now a circular icon-only control: 34px (30px in `vg-compact` contexts) with a 22px (18px compact) YouTube filled download glyph, `aria-label="Download"` retained for accessibility, `.vg-label` markup and CSS deleted entirely.
+   - Colors are explicit and mutually contrast-safe: light mode = `#0f0f0f` icon on `rgba(0,0,0,0.08)` chip; dark mode (`.vg-dark`) = `#f1f1f1` icon on `rgba(255,255,255,0.14)` chip; `:active` scales to 0.9 and deepens the chip.
+   - New `vgIsDarkTheme()` detects YouTube's active theme via `html[dark]` / `ytm-app[dark]` / `ytd-app[dark]` attributes, body `dark` class, and a `prefers-color-scheme` fallback. `vgRegisterThemeButton()` keeps a bounded (max 120) registry of live buttons and `vgSyncButtonThemes()` re-checks on the existing 1s interval, so live theme toggles restyle every injected button.
+
+2. **[`QualityPickerViewModel.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/modal/QualityPickerViewModel.kt) - 5-Minute Resolved-Result Cache**:
+   - `resolutionCache: ConcurrentHashMap<String, CachedResolution>` keyed by the (already sanitized) payload URL, covering both single videos and playlists; `CACHE_TTL_MS = 5 * 60 * 1000L`.
+   - `load()` serves a cache hit instantly by rebuilding the default `Success` state from the stored `ResolvedMediaInfo` (via the newly extracted `buildSuccessState()`), skipping the resolver and all its network requests; misses show `Loading` and resolve as before, then store the result (`cacheStore` opportunistically prunes expired entries, keeping the map tiny).
+   - Added a `loadGeneration` counter: every `load()` bumps it and a resolve that is superseded before finishing is dropped (its result neither reaches the UI nor the cache), preventing stale race writes when the background payload refresh re-loads an in-flight picker.
+   - `dismiss()` now bumps the generation too, so a resolve still in flight when the user closes the sheet can no longer resurrect the closed popup moments later (pre-existing defect surfaced during this fix).
+
+### 2. Verification
+
+- **JS syntax validation**: extracted `INJECTION_SCRIPT` raw string (1099 lines) to a file and ran `node --check` - exit 0 (valid JS).
+- **Build**: `.\gradlew.bat :app:assembleDebug --console=plain` - `BUILD SUCCESSFUL in 28s`.
+- **Device install**: Samsung SM-M136B (`RZCW415JDCZ`) reports `ro.product.cpu.abi = armeabi-v7a` (32-bit build); `app-arm64-v8a-debug.apk` was rejected with `INSTALL_FAILED_NO_MATCHING_ABIS`, so `app-armeabi-v7a-debug.apk` (rebuilt 23:47) was installed with `adb install -r` - Success. App launched and process confirmed (`pidof com.vidgrab.app.debug` returns a PID).
+
+### 3. Supervisor Review Checklist
+
+- [x] No "Download" text label remains in the injected UI; icon-only in all contexts.
+- [x] Button colors are theme-detected explicit values; black-on-black (or light-on-light) can no longer occur, and live theme toggles restyle existing buttons.
+- [x] Reopening the picker for the same URL within 5 minutes is instant and performs zero resolver/network calls (videos and playlists alike).
+- [x] Superseded or dismissed in-flight resolves cannot overwrite state or re-open the sheet.
+- [x] Injected JS passes `node --check`; debug build installed and launched on the connected device.
+
+---
+
+## Audit Entry - October 25, 2026: Restored JVM Compatibility Engine, Global Engine Mode, Playlist Quality Preferences & Exact Merge-Audio Track
+
+- **Date/Time**: 2026-10-25T15:25:00+05:30
+- **Scope**: Four user requests from the latest round: (1) restore the removed legacy `DirectJvmStreamDownloader` and use it as a fallback; (2) expose the engine choice as one global setting (fast by default), never as a per-download prompt; (3) fix the playlist picker offering only six synthetic H.264 presets; (4) let the user choose the exact video + audio track merged into the final file without cluttering the picker.
+
+### 1. Global Engine Setting & Fallback
+
+1. **[`DirectJvmStreamDownloader.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/engine/DirectJvmStreamDownloader.kt) - Legacy Engine Restored**:
+   - Restored verbatim from commit `781fa80` (the commit before its removal in `00049bc`), then updated for this round. It resolves via warm NewPipe `StreamInfo`, downloads 2 MB Range chunks, and muxes with the bundled FFmpeg.
+   - Now honors `videoCodecPreference` (H.264 / VP9 / AV1), the exact `mergeAudioTrackId`, and the compatible audio extension. The original/default audio track is preferred when no track is chosen.
+   - Mux container selection is codec-aware: VP9 + Opus writes `output.webm` first, everything else writes `output.mp4`; MKV is the universal fallback. Rejected mux outputs are deleted immediately so `findFinishedMediaFile()` cannot pick up a corrupt partial.
+   - The ≤360p progressive shortcut is skipped when a non-H.264 codec or an exact audio track is requested, so the merge never silently reverts to the original audio.
+
+2. **[`DownloadEnginePreferences.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/engine/DownloadEnginePreferences.kt) - Persistent Mode**:
+   - New `DownloadEngineMode` enum (`FAST`, `COMPATIBILITY`) backed by `vidgrab_engine_prefs` / `download_engine_mode`, exposed as a `StateFlow`, initialized from [`App.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/App.kt). Default is `FAST`.
+   - FAST = `FastDirectDownloader` first; COMPATIBILITY = `DirectJvmStreamDownloader` first. In both modes the other native engine runs second, then yt-dlp (`ios,tv`), then the authenticated fallback. A user preference can delay but never prevent yt-dlp.
+
+3. **[`SettingsScreen.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/settings/SettingsScreen.kt) - Single Global Engine Switch**:
+   - One app-wide "Compatibility engine" switch (off = Fast, the default). Copy states that it applies to every download and that the other engine still runs automatically as a fallback.
+   - The switch is the only engine control in the app: the download sheet, queue, and notifications never ask the user to pick an engine. The executor reads the persisted value once per task and logs it (`Primary engine = ...`).
+
+4. **[`DownloadEngineExecutor.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/engine/DownloadEngineExecutor.kt) - Orchestration**:
+   - Selected engine first, other engine second, then yt-dlp. Pause/cancel is checked between attempts.
+   - Expired direct URLs are re-resolved with the chosen codec, exact audio track, and output container. Legacy artifacts (`output.*`, `temp_video.*`, `temp_audio.*`, `keep_part_*`, `trimmed_output.*`, `concat.txt`) are removed before yt-dlp so stale partials cannot masquerade as results; yt-dlp `.part` files stay resumable.
+   - Safety gates added after review: `FastDirectDownloader` is skipped for VP9/WebM video merges because its Android `MediaMuxer` path only produces MP4 (AVC/AAC); audio-only MP3/FLAC tasks skip native engines entirely so `yt-dlp -x --audio-format` performs the required transcode instead of exporting mislabeled raw M4A/Opus bytes.
+   - yt-dlp fallback selectors now come from `FormatSelectorBuilder` (codec + audio container + language) and `--merge-output-format` follows the output container instead of always forcing MP4.
+
+### 2. Playlist Sub-Qualities & Batch Preferences
+
+- **[`QualityPickerBottomSheet.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/modal/QualityPickerBottomSheet.kt)** now shows two compact preference chip rows in playlist mode instead of a hidden/absent variant row:
+  - `Video codec preference`: Auto / H.264 / VP9 / AV1.
+  - `Merge audio preference`: Auto / M4A for MP4-oriented codecs, Auto / Opus when VP9 is selected (the view model resets an incompatible stored choice on codec switch).
+- These are honest preferences, not fabricated per-item variants: each playlist item still resolves against its real formats at download time, so an unavailable codec downgrades gracefully. VP9 tasks are created with `outputExt = webm`; tasks persist `videoCodecPreference` / `mergeAudioExtension` through [`QueueRepository.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/queue/QueueRepository.kt).
+- **[`FormatSelectorBuilder.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/extractor/FormatSelectorBuilder.kt)** builds explicit chains such as `bestvideo[height<=H][vcodec^=av01]+bestaudio[ext=webm]/...`, with an optional `[language^=xx]` filter and generic fallbacks.
+
+### 3. Exact Merge-Audio Track
+
+- **[`FormatModels.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/extractor/FormatModels.kt)**: `AudioQualityOption` now carries `audioTrackId`, `audioTrackName`, `audioLanguage`, `audioTrackType`, and `isDefaultTrack`, plus `trackKey` (groups bitrates of the same physical track) and `isOriginalOrDefault` (tolerates responses that omit the track object for the original audio).
+- **[`DualEngineMetadataResolver.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/extractor/DualEngineMetadataResolver.kt)**: parses the `audioTrack` object from player JSON, keeps duplicate bitrates of different languages distinct, normalizes WebM audio to `opus`, and pairs video variants with the original/default track instead of merely the loudest one.
+- **Picker UI**: a single compact `Audio Track (merged)` chip row appears only when the selected video is not pre-muxed and more than one valid track exists for the output container. Options are `Auto` plus track display names (language fallback). MP4 output restricts merge candidates to M4A (avoids Opus-in-MP4 breakage); VP9/WebM uses Opus. The Audio tab is unchanged and still offers both containers.
+- **[`QualityPickerViewModel.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/modal/QualityPickerViewModel.kt)**: resolves the exact selected track first, falls back to the default/original track, and writes `mergeAudioTrackId/Name/Language/Extension` into the request. The yt-dlp fallback additionally receives `[language^=xx]`; if that exact track is unavailable it degrades to generic audio rather than failing.
+- **Persistence**: [`DownloadTaskEntity.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/database/DownloadTaskEntity.kt) stores the new fields; [`AppDatabase.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/database/AppDatabase.kt) is version 7 with the existing destructive migration.
+
+### 4. Build & Verification Results
+
+- **Command Executed**: `.\gradlew.bat :app:assembleDebug --console=plain`
+- **Compilation Output**: `BUILD SUCCESSFUL` (0 errors; only the pre-existing NewPipe `url` deprecation warnings in `DirectJvmStreamDownloader`).
+- **APK Outputs**: regenerated at 15:37 local - `app-arm64-v8a-debug.apk` (126.4 MB), `app-armeabi-v7a-debug.apk` (119.2 MB), `app-x86_64-debug.apk` (129.5 MB), `app-universal-debug.apk` (287.4 MB).
+- **Runtime Verification Status**: BLOCKED - `adb devices -l` reports no attached device, including after an adb server restart. Last known device `RZCW415JDCZ` (armeabi-v7a) is disconnected; install/UI validation must be repeated when it reconnects.
+- **Static Review**: verified both engine paths compile against the same task model, all five `DownloadTaskEntity` creation sites propagate the new fields, and no new `$` interpolation was introduced into injected WebView scripts.
+
+### 5. Supervisor Review Checklist
+
+- [x] Legacy `DirectJvmStreamDownloader` restored and reachable as a real fallback (not dead code).
+- [x] Single global Fast/Compatibility setting in Settings; no per-download engine prompt anywhere.
+- [x] Order is selected engine -> other native engine -> yt-dlp; pause/cancel checked between attempts.
+- [x] Playlist mode exposes honest codec/audio preference chips; VP9 tasks produce `.webm` and no fabricated per-item variants.
+- [x] `Audio Track (merged)` row is compact, hidden for single-track and pre-muxed videos, and never appears in playlist mode.
+- [x] Exact track is honored by FastDirect (selected URL), DirectJvm (`audioTrackId`), and yt-dlp (language filter with generic fallback).
+- [x] MP4 merges use M4A/AAC; VP9/WebM merges use Opus; fast hardware muxer is gated to MP4-safe inputs.
+- [x] Legacy partial artifacts cannot be exported as completed downloads.
+- [x] `:app:assembleDebug` builds clean; on-device validation remains pending device reconnection.
+
+---
+
+## Audit Entry - October 25, 2026: Explicit Engine Choice, IDM-Style Audio Pairing & Full Theme Sweep
+
+- **Date/Time**: 2026-10-25T16:10:00+05:30
+- **Scope**: User feedback on the previous round: the compatibility switch was confusing, the merge-audio control only existed in playlists and offered one effective choice, and gold/black-on-black leftovers remained after theming.
+
+### 1. Download Engine Selector
+
+- **[`SettingsScreen.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/settings/SettingsScreen.kt)** replaces the "Compatibility engine" switch with two explicit radio rows:
+  - **Fast** (RECOMMENDED badge): "Parallel segmented downloads. Recommended for almost every video."
+  - **Compatibility**: "Older extractor with a slower transfer. Use it only when the Fast engine cannot finish a video."
+  - Card copy states it is one choice for every download and that the app never asks per video; the footer explains the automatic other-engine then yt-dlp fallback.
+- Persistence and execution order are unchanged (`DownloadEnginePreferences`, selected -> other native engine -> yt-dlp). The selector reacts to the existing `mode` StateFlow, so tapping a row updates immediately.
+
+### 2. IDM-Style Any-Video + Any-Audio Pairing
+
+- **[`FormatModels.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/extractor/FormatModels.kt)**: `AudioQualityOption.streamKey` identifies a concrete stream as `track | extension | bitrate`; `mergeAudioBitrateKbps` was added to the request model and task entity.
+- **[`QualityPickerBottomSheet.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/modal/QualityPickerBottomSheet.kt)**:
+  - Single videos now always list every concrete audio stream when more than one exists, labelled with track name (multi-track uploads only), codec, bitrate and container, e.g. `English · Opus 160k · WEBM`. `Auto (best)` remains the default; one-stream videos show an informational line instead of a fake choice.
+  - A selected-format summary (`Selected: H.264 · MP4 · 60fps · size`) and the hint "Any video + any audio. Mixed codecs are saved as MKV automatically." make the result explicit.
+  - Playlists keep honest preference chips but now always offer `Auto / M4A / Opus` regardless of the chosen codec, with a note explaining that a mixed pair is saved as MKV.
+- **Container legality** ([`QualityPickerViewModel.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/modal/QualityPickerViewModel.kt)): an exact audio pick always wins. H.264/AV1 + AAC -> `mp4`, VP9 + Opus -> `webm`, mixed pairs -> `mkv`; playlists use the same rules in `resolveBatchContainer`.
+- **Automatic audio stays automatic**: only an explicit stream pick pins track/bitrate/language. `Auto (best)` keeps just the container preference, so the <=360p pre-muxed progressive shortcut still applies (MP4 only) and the yt-dlp default selector chain is preserved. VP9 defaults to Opus/WebM, H.264 and AV1 default to AAC/MP4.
+- **Engine support**:
+  - [`DirectJvmStreamDownloader.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/engine/DirectJvmStreamDownloader.kt) matches track ID, track name, or language plus extension and bitrate (±16 kbps tolerance), only takes the exact-stream fast path when a stream was explicitly requested, keeps the <=360p progressive shortcut for automatic MP4 output only, and muxes to the container promised by the picker.
+  - [`DownloadEngineExecutor.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/engine/DownloadEngineExecutor.kt) skips FastDirect for `webm`/`mkv` (MediaMuxer is MP4-only), supports `--merge-output-format mkv`, and applies the same bitrate tolerance when re-resolving expired URLs.
+  - [`FormatSelectorBuilder.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/extractor/FormatSelectorBuilder.kt) accepts a bitrate cap for both video-merge and audio-only selectors (`[abr<=N+16]`), so the saved bitrate matches the picker. AV1 + Auto now prefers AAC so the promised MP4 container is legal.
+- **Persistence**: [`DownloadTaskEntity.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/database/DownloadTaskEntity.kt) stores `mergeAudioBitrateKbps`; [`AppDatabase.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/database/AppDatabase.kt) is version 8 (destructive migration retained).
+
+### 3. Theme Migration Cleanup
+
+- **[`AppTheme.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/ui/theme/AppTheme.kt)**:
+  - Added readable per-theme `successGreen` / `errorRed` (light green/red on dark palettes, dark green/red on light palettes).
+  - `VidGrabTheme` now provides a Material3 `ColorScheme` derived from the active palette + accent (`background`, `surface`, `onBackground`, `onSurface`, outline, error), plus global `LocalContentColor` / `LocalTextStyle` defaults from `textPrimary`. This removes the default light scheme that caused black-on-black defaults for any component relying on inherited text color.
+  - All four Scaffolds (browser, downloads, settings, startup splash) now pass explicit `containerColor` and `contentColor`; the bottom sheets do the same. Text without an explicit color can no longer fall back to black.
+- Removed every hardcoded palette literal outside the palette definition:
+  - `QueueDrawerModal.kt` (45 literals), `SettingsBottomSheet.kt` (27), `MainActivity.EngineStatusScreen`, picker loading/error views, `AsyncThumbnailImage` placeholder, `ThumbnailImageLoader.RemoteThumbnailImage`, and the remaining SettingsScreen labels now use `AppTheme.colors` / `AppTheme.accent`.
+  - Failed queue cards use `errorRed` tints; success icons use `successGreen`.
+  - Picker switch thumbs use the accent's contrast color instead of plain white.
+- **Notifications**: [`DownloadNotificationManager.kt`](file:///d:/Web-Dev/react-native/vid_grab/app/src/main/java/com/vidgrab/app/core/worker/DownloadNotificationManager.kt) drops the fixed gold `.setColor(0xFFE5A93C)` and `setColorized(true)`. It reads the active accent from `ThemeManager`, darkens that accent by 35% in a light system shade so speed text stays readable, colors the RemoteViews progress bar/track on Android 12+, and picks title/size/speed text colors from the system shade. Completion notifications also use the accent. All XML gold tints/colors and the now-unused `colors.xml`, `notification_badge_bg.xml`, `notification_progress_bar.xml` and `notification_card_bg.xml` were deleted; the thumbnail placeholder is a neutral translucent black that works on any background.
+
+### 4. Build & Verification Results
+
+- **Command Executed**: `.\gradlew.bat :app:assembleDebug --console=plain`
+- **Compilation Output**: `BUILD SUCCESSFUL` (latest run 29s; only pre-existing NewPipe deprecation warnings).
+- **Runtime Verification Status**: BLOCKED - `adb devices -l` is empty and Windows enumerates no Samsung `VID_04E8` device, so the new APK could not be installed. Replug USB and install `app/build/outputs/apk/debug/app-armeabi-v7a-debug.apk`.
+- **Static Review**: no `Color(0x...)` literals remain outside `AppTheme.kt`; the only `Color.White`/`Color.Black` uses are thumbnail overlays, the sheet scrim and the check icon on `successGreen`, all of which are correct on light and dark backgrounds. Notification layouts only use defaults that are overridden at runtime; no resource references point at the deleted legacy gold files; Room version and all `DownloadTaskEntity` construction sites agree.
+
+### 5. Supervisor Review Checklist
+
+- [x] Engine setting is one global preference with two understandable rows; no per-download prompt.
+- [x] Selected engine -> other native engine -> yt-dlp order preserved.
+- [x] Single-video picker lists real audio streams (track + codec + bitrate + container), not one useless option, and Auto still takes the progressive shortcut.
+- [x] Exact audio selection wins and the output container is derived from the codec pair (MP4 / WebM / MKV).
+- [x] Playlists offer both M4A and Opus regardless of video codec and explain the MKV fallback.
+- [x] Native engines and yt-dlp all honor the chosen bitrate/track/container, including expired-URL re-resolution.
+- [x] No gold or legacy Warm Sand literals remain in UI code; light-theme text is no longer black-on-black.
+- [x] Notification accent follows the selected theme instead of fixed gold.
+- [x] Debug build succeeds; on-device verification remains pending USB reconnection.

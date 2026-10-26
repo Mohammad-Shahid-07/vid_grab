@@ -92,6 +92,7 @@ class DownloadQueueWorker(
                                         Timber.i("DownloadQueueWorker: Task %s preserved as PAUSED", task.id)
                                     } else {
                                         dao.markFailed(task.id, e.localizedMessage ?: "Download failed")
+                                        DownloadNotificationManager.cancelProgressNotification(applicationContext, task.id)
                                     }
                                 } finally {
                                     activeJobs.remove(task.id)
@@ -135,7 +136,11 @@ class DownloadQueueWorker(
                 throw kotlinx.coroutines.CancellationException("Task ${nextTask.id} was paused")
             }
 
-            val currentTotal = if (update.totalBytes > 0L) update.totalBytes else nextTask.totalBytes
+            var maxKnownTotalBytes = nextTask.totalBytes
+            val currentTotal = if (update.totalBytes > maxKnownTotalBytes) {
+                maxKnownTotalBytes = update.totalBytes
+                update.totalBytes
+            } else maxKnownTotalBytes
             val currentDownloaded = if (update.downloadedBytes > 0L) update.downloadedBytes else (currentTotal * (update.progress / 100f)).toLong()
 
             dao.updateProgress(
@@ -145,7 +150,11 @@ class DownloadQueueWorker(
                 totalBytes = currentTotal,
                 speed = update.speedText,
                 eta = update.etaSeconds,
-                status = update.status
+                status = update.status,
+                videoBytes = update.videoBytes,
+                audioBytes = update.audioBytes,
+                activeConnections = update.activeConnections,
+                segmentProgressCsv = update.segmentProgressCsv
             )
 
             val now = System.currentTimeMillis()
@@ -165,7 +174,7 @@ class DownloadQueueWorker(
                 )
                 runCatching {
                     val notifManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-                    notifManager.notify(DownloadNotificationManager.FOREGROUND_NOTIFICATION_ID, notif)
+                    notifManager.notify(DownloadNotificationManager.getNotificationId(nextTask.id), notif)
                 }.onFailure { Timber.w(it, "Notification progress update skipped") }
             }
         }
@@ -199,6 +208,7 @@ class DownloadQueueWorker(
 
         // Post completion notification
         DownloadNotificationManager.postCompletionNotification(applicationContext, nextTask.title, nextTask.isAudioOnly)
+        DownloadNotificationManager.cancelProgressNotification(applicationContext, nextTask.id)
         Timber.i("Completed queue task: %s", nextTask.title)
     }
 

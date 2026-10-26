@@ -7,19 +7,30 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.os.Build
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.app.NotificationCompat
+import androidx.core.graphics.ColorUtils
 import androidx.work.ForegroundInfo
 import android.widget.RemoteViews
 import com.vidgrab.app.MainActivity
 import com.vidgrab.app.R
+import com.vidgrab.app.core.database.DownloadTaskEntity
 import com.vidgrab.app.core.database.TaskStatus
+import com.vidgrab.app.ui.theme.ThemeManager
 import java.util.Locale
 
 object DownloadNotificationManager {
 
     const val CHANNEL_ID = "media_downloads_channel"
     const val FOREGROUND_NOTIFICATION_ID = 1001
+
+    fun getNotificationId(taskId: String): Int {
+        if (taskId.isBlank()) return FOREGROUND_NOTIFICATION_ID
+        return 10000 + (taskId.hashCode() and 0x7FFF)
+    }
 
     fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -59,7 +70,7 @@ object DownloadNotificationManager {
         )
 
         val pctInt = progressPercent.toInt().coerceIn(0, 100)
-        val isIndeterminate = progressPercent <= 0f && status != TaskStatus.DOWNLOADING
+        val isIndeterminate = progressPercent <= 0f && downloadedBytes <= 0L && status == TaskStatus.DOWNLOADING
 
         val sizeString = if (totalBytes > 0L) {
             val dlMb = downloadedBytes.toFloat() / (1024f * 1024f)
@@ -104,10 +115,32 @@ object DownloadNotificationManager {
             else -> "$sizeString • $speedEtaString"
         }
 
+        // Follow the app's active accent instead of the retired gold, and keep the custom
+        // RemoteViews readable in both the light and dark system notification shade.
+        val accentArgb = ThemeManager.getInstance(context).accentState.value.color.toArgb()
+        val isNightShade = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        // Light shades need a darker accent for readable speed text; dark shades keep the raw accent.
+        val notificationAccentColor = if (isNightShade) {
+            accentArgb
+        } else {
+            ColorUtils.blendARGB(accentArgb, android.graphics.Color.BLACK, 0.35f)
+        }
+        val notificationTextColor = if (isNightShade) {
+            android.graphics.Color.WHITE
+        } else {
+            android.graphics.Color.rgb(24, 24, 27)
+        }
+        val notificationTrackColor = if (isNightShade) {
+            android.graphics.Color.rgb(63, 63, 70)
+        } else {
+            android.graphics.Color.rgb(228, 228, 231)
+        }
+
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_vidgrab_download)
-            .setColor(0xFFE5A93C.toInt())
-            .setColorized(true)
+            .setColor(notificationAccentColor)
+            .setColorized(false)
             .setContentTitle(title)
             .setContentText(notificationContentText)
             .setSubText(badgeText)
@@ -161,6 +194,7 @@ object DownloadNotificationManager {
                 setProgressBar(R.id.notif_progress, 100, pctInt, isIndeterminate)
                 setTextViewText(R.id.notif_size, sizeString)
                 setTextViewText(R.id.notif_speed_eta, speedEtaString)
+                applyAppThemeColors(notificationAccentColor, notificationTextColor, notificationTrackColor)
                 if (thumbnailBitmap != null) {
                     setImageViewBitmap(R.id.notif_thumbnail, thumbnailBitmap)
                 }
@@ -172,6 +206,7 @@ object DownloadNotificationManager {
                 setProgressBar(R.id.notif_progress, 100, pctInt, isIndeterminate)
                 setTextViewText(R.id.notif_size, sizeString)
                 setTextViewText(R.id.notif_speed_eta, speedEtaString)
+                applyAppThemeColors(notificationAccentColor, notificationTextColor, notificationTrackColor)
                 if (thumbnailBitmap != null) {
                     setImageViewBitmap(R.id.notif_thumbnail, thumbnailBitmap)
                 }
@@ -191,6 +226,32 @@ object DownloadNotificationManager {
         return builder.build()
     }
 
+    fun postStatusNotification(context: Context, task: DownloadTaskEntity) {
+        val notification = buildProgressNotification(
+            context = context,
+            title = task.title,
+            progressPercent = task.progressPercent,
+            speedText = task.speedText,
+            etaSeconds = task.etaSeconds,
+            status = task.status,
+            downloadedBytes = task.downloadedBytes,
+            totalBytes = task.totalBytes,
+            thumbnailBitmap = null,
+            taskId = task.id
+        )
+        runCatching {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(getNotificationId(task.id), notification)
+        }.onFailure { timber.log.Timber.w(it, "Could not post status notification for task %s", task.id) }
+    }
+
+    fun cancelProgressNotification(context: Context, taskId: String) {
+        runCatching {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.cancel(getNotificationId(taskId))
+        }.onFailure { timber.log.Timber.w(it, "Could not cancel progress notification for task %s", taskId) }
+    }
+
     fun postCompletionNotification(context: Context, title: String, isAudio: Boolean) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -207,11 +268,33 @@ object DownloadNotificationManager {
             .setContentText(title)
             .setSubText("YouDrop")
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setColor(ThemeManager.getInstance(context).accentState.value.color.toArgb())
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()
 
         manager.notify((System.currentTimeMillis() % 10000).toInt(), notification)
+    }
+
+    /** Applies the active accent and a shade-appropriate text color to the custom views. */
+    private fun RemoteViews.applyAppThemeColors(
+        accentColor: Int,
+        textColor: Int,
+        progressTrackColor: Int
+    ) {
+        // RemoteViews can only tint a ProgressBar through ColorStateList on Android 12+.
+        // Below that the system default tint is used instead of a hardcoded gold.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            setColorStateList(R.id.notif_progress, "setProgressTintList", ColorStateList.valueOf(accentColor))
+            setColorStateList(
+                R.id.notif_progress,
+                "setProgressBackgroundTintList",
+                ColorStateList.valueOf(progressTrackColor)
+            )
+        }
+        setTextColor(R.id.notif_title, textColor)
+        setTextColor(R.id.notif_size, textColor)
+        setTextColor(R.id.notif_speed_eta, accentColor)
     }
 
     fun createForegroundInfo(notification: Notification): ForegroundInfo {

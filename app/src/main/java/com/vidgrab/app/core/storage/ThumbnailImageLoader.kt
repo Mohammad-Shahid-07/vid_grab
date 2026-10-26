@@ -19,7 +19,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -107,14 +106,15 @@ fun RemoteThumbnailImage(
             modifier = modifier
         )
     } else {
+        val theme = com.vidgrab.app.ui.theme.AppTheme.colors
         Box(
-            modifier = modifier.background(Color(0xFF28201C)),
+            modifier = modifier.background(theme.pillBg),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = fallbackIcon,
                 contentDescription = contentDescription,
-                tint = Color(0xFFE5A93C).copy(alpha = 0.7f),
+                tint = theme.textMuted,
                 modifier = Modifier.size(18.dp)
             )
         }

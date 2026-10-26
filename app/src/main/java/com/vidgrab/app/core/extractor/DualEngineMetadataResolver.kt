@@ -9,6 +9,7 @@ import org.json.JSONObject
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.channel.ChannelInfo
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import timber.log.Timber
 
@@ -339,7 +340,16 @@ object DualEngineMetadataResolver {
                             ?: payload.durationSeconds.takeIf { it > 0L }
                             ?: 180L
 
-                        val bestAudio = streamInfo.audioStreams.maxByOrNull { it.bitrate }
+                        val bestAudio = streamInfo.audioStreams
+                            .sortedWith(
+                                compareByDescending<org.schabi.newpipe.extractor.stream.AudioStream> {
+                                    it.audioTrackType == AudioTrackType.ORIGINAL
+                                }.thenByDescending {
+                                    it.codec?.contains("mp4a", ignoreCase = true) == true ||
+                                        it.format?.suffix?.equals("m4a", true) == true
+                                }.thenByDescending { it.bitrate }
+                            )
+                            .firstOrNull()
                         val bestAudioBytes = if (bestAudio != null) {
                             val br = bestAudio.bitrate.toLong().takeIf { it > 0 } ?: 128000L
                             (br * durationSec) / 8L
@@ -392,16 +402,24 @@ object DualEngineMetadataResolver {
                                     fps = vs.fps,
                                     vcodec = codecBadge,
                                     container = "mp4",
+                                    videoOnlyBytes = rawVideoBytes,
+                                    audioStreamBytes = bestAudioBytes,
                                     estimatedTotalBytes = combinedBytes,
                                     formatSelector = FormatSelectorBuilder.buildVideoSelector(resHeight),
                                     directStreamUrl = vs.content ?: @Suppress("DEPRECATION") vs.url,
-                                    matchedAudioStreamUrl = bestAudio?.content ?: @Suppress("DEPRECATION") bestAudio?.url
+                                    matchedAudioStreamUrl = bestAudio?.content ?: @Suppress("DEPRECATION") bestAudio?.url,
+                                    isMuxed = false
                                 )
                             }
 
                         val audioOptions = streamInfo.audioStreams.map { a ->
-                            val ext = a.format?.suffix ?: "m4a"
-                            val isOpus = a.codec?.contains("opus", ignoreCase = true) == true
+                            val rawExt = a.format?.suffix?.lowercase() ?: "m4a"
+                            val isOpus = a.codec?.contains("opus", ignoreCase = true) == true || rawExt == "webm"
+                            val ext = when {
+                                isOpus -> "opus"
+                                rawExt == "mp4" -> "m4a"
+                                else -> rawExt
+                            }
                             val codecName = if (isOpus) "Opus" else "AAC"
                             val bitrateKbps = (a.bitrate / 1000).coerceAtLeast(48)
                             val aBytes = ((a.bitrate.toLong().takeIf { it > 0 } ?: 128000L) * durationSec) / 8L
@@ -413,9 +431,14 @@ object DualEngineMetadataResolver {
                                 bitrateKbps = bitrateKbps,
                                 estimatedBytes = aBytes,
                                 formatSelector = FormatSelectorBuilder.buildAudioSelector(ext),
-                                directStreamUrl = a.content ?: @Suppress("DEPRECATION") a.url
+                                directStreamUrl = a.content ?: @Suppress("DEPRECATION") a.url,
+                                audioTrackId = a.audioTrackId,
+                                audioTrackName = a.audioTrackName,
+                                audioLanguage = a.audioLocale?.toLanguageTag(),
+                                audioTrackType = a.audioTrackType?.name,
+                                isDefaultTrack = a.audioTrackType == AudioTrackType.ORIGINAL
                             )
-                        }.distinctBy { "${it.extension}_${it.bitrateKbps}" }
+                        }.distinctBy { "${it.trackKey}_${it.extension}_${it.bitrateKbps}" }
 
                         val elapsed = System.currentTimeMillis() - startTime
                         return@withContext ResolvedMediaInfo.SingleVideo(
@@ -458,6 +481,24 @@ object DualEngineMetadataResolver {
         )
     }
 
+    /**
+     * Picks the most useful audio candidate: default/original track first, then playable URL,
+     * then highest bitrate. Used to build the automatic video+audio pairing and fallbacks.
+     */
+    private fun isBetterAudioCandidate(
+        candidate: AudioQualityOption,
+        current: AudioQualityOption?
+    ): Boolean {
+        if (current == null) return true
+        if (candidate.isOriginalOrDefault != current.isOriginalOrDefault) {
+            return candidate.isOriginalOrDefault
+        }
+        if ((candidate.directStreamUrl != null) != (current.directStreamUrl != null)) {
+            return candidate.directStreamUrl != null
+        }
+        return candidate.bitrateKbps > current.bitrateKbps
+    }
+
     private fun parsePlayerResponseJson(
         payload: DownloadTriggerPayload,
         root: JSONObject,
@@ -495,8 +536,9 @@ object DualEngineMetadataResolver {
 
         // 1. Process Audio Streams
         val audioList = mutableListOf<AudioQualityOption>()
-        var bestAudioDirectUrl: String? = null
-        var bestAudioBytes: Long = 0L
+        var bestM4aAudio: AudioQualityOption? = null
+        var bestOpusAudio: AudioQualityOption? = null
+        var bestAnyAudio: AudioQualityOption? = null
 
         for (i in 0 until adaptiveFormats.length()) {
             val format = adaptiveFormats.optJSONObject(i) ?: continue
@@ -519,33 +561,50 @@ object DualEngineMetadataResolver {
                     (bitrate * durationSec) / 8L
                 }
 
-                if (audioBytes > bestAudioBytes || bestAudioDirectUrl == null) {
-                    bestAudioBytes = audioBytes
-                    if (directUrl != null) bestAudioDirectUrl = directUrl
-                }
-
                 val isOpus = mimeType.contains("opus")
                 val ext = if (isOpus) "opus" else "m4a"
                 val codec = if (isOpus) "Opus" else "AAC"
                 val bitrateKbps = (bitrate / 1000L).toInt().coerceAtLeast(48)
 
-                audioList.add(
-                    AudioQualityOption(
-                        label = "$bitrateKbps kbps $codec (${ext.uppercase()})",
-                        extension = ext,
-                        acodec = codec,
-                        bitrateKbps = bitrateKbps,
-                        estimatedBytes = audioBytes,
-                        formatSelector = FormatSelectorBuilder.buildAudioSelector(ext),
-                        directStreamUrl = directUrl
-                    )
+                // Multi-language uploads expose one adaptive audio format per track.
+                // Keeping this metadata lets the picker offer the exact track the user wants.
+                val audioTrack = format.optJSONObject("audioTrack")
+                val rawTrackId = audioTrack?.optString("id").orEmpty()
+                val trackId = rawTrackId.takeIf { it.isNotBlank() && !it.equals("null", true) }
+                val trackName = audioTrack?.optString("displayName")
+                    ?.takeIf { it.isNotBlank() && !it.equals("null", true) }
+                val isDefaultTrack = audioTrack?.optBoolean("audioIsDefault", false) == true
+                val language = trackId?.substringBefore('.')?.takeIf { it.isNotBlank() }
+
+                val audioOpt = AudioQualityOption(
+                    label = "$bitrateKbps kbps $codec (${ext.uppercase()})",
+                    extension = ext,
+                    acodec = codec,
+                    bitrateKbps = bitrateKbps,
+                    estimatedBytes = audioBytes,
+                    formatSelector = FormatSelectorBuilder.buildAudioSelector(ext),
+                    directStreamUrl = directUrl,
+                    audioTrackId = trackId,
+                    audioTrackName = trackName,
+                    audioLanguage = language,
+                    audioTrackType = if (isDefaultTrack) AudioTrackType.ORIGINAL.name else null,
+                    isDefaultTrack = isDefaultTrack
                 )
+                audioList.add(audioOpt)
+
+                if (ext == "m4a" && isBetterAudioCandidate(audioOpt, bestM4aAudio)) {
+                    bestM4aAudio = audioOpt
+                }
+                if (ext == "opus" && isBetterAudioCandidate(audioOpt, bestOpusAudio)) {
+                    bestOpusAudio = audioOpt
+                }
+                if (isBetterAudioCandidate(audioOpt, bestAnyAudio)) {
+                    bestAnyAudio = audioOpt
+                }
             }
         }
 
-        if (bestAudioBytes == 0L) {
-            bestAudioBytes = (128000L * durationSec) / 8L
-        }
+        val fallbackAudioBytes = (128000L * durationSec) / 8L
 
         // 2. Process Video Streams (Preserve distinct codec variants: H.264, VP9, AV1)
         val videoVariants = mutableMapOf<String, VideoQualityOption>()
@@ -587,7 +646,6 @@ object DualEngineMetadataResolver {
                     } else {
                         (bitrate * durationSec) / 8L
                     }
-                    val totalSize = rawVideoSize + bestAudioBytes
 
                     val isAvc = mimeType.contains("avc1")
                     val isAv01 = mimeType.contains("av01")
@@ -601,6 +659,17 @@ object DualEngineMetadataResolver {
                     val container = if (isAvc || isAv01) "mp4" else "webm"
                     val fpsTag = if (fps >= 50) "60" else "30"
                     val variantKey = "$height-$codecBadge-$fpsTag"
+
+                    val pairedAudio = if (container == "mp4") {
+                        bestM4aAudio ?: bestAnyAudio
+                    } else {
+                        bestOpusAudio ?: bestAnyAudio ?: bestM4aAudio
+                    }
+                    val pairedAudioBytes = pairedAudio?.estimatedBytes?.takeIf { it > 0L }
+                        ?: bestAnyAudio?.estimatedBytes?.takeIf { it > 0L }
+                        ?: fallbackAudioBytes
+                    val pairedAudioUrl = pairedAudio?.directStreamUrl ?: bestM4aAudio?.directStreamUrl ?: bestAnyAudio?.directStreamUrl
+                    val totalSize = rawVideoSize + pairedAudioBytes
 
                     val label = when (height) {
                         2160 -> "4K Ultra HD"
@@ -622,10 +691,12 @@ object DualEngineMetadataResolver {
                             fps = fps,
                             vcodec = codecBadge,
                             container = container,
+                            videoOnlyBytes = rawVideoSize,
+                            audioStreamBytes = pairedAudioBytes,
                             estimatedTotalBytes = totalSize,
                             formatSelector = FormatSelectorBuilder.buildVideoSelector(height, codecBadge),
                             directStreamUrl = directUrl,
-                            matchedAudioStreamUrl = bestAudioDirectUrl,
+                            matchedAudioStreamUrl = pairedAudioUrl,
                             isMuxed = false
                         )
                     }
@@ -668,6 +739,8 @@ object DualEngineMetadataResolver {
                         fps = format.optInt("fps", 30),
                         vcodec = "H.264",
                         container = "mp4",
+                        videoOnlyBytes = totalSize,
+                        audioStreamBytes = 0L,
                         estimatedTotalBytes = totalSize,
                         formatSelector = FormatSelectorBuilder.buildVideoSelector(height),
                         directStreamUrl = directUrl,
@@ -683,7 +756,7 @@ object DualEngineMetadataResolver {
                 .thenBy { if (it.vcodec == "H.264") 0 else if (it.vcodec == "VP9") 1 else 2 }
                 .thenByDescending { it.fps }
         )
-        val audioOptions = audioList.distinctBy { "${it.extension}_${it.bitrateKbps}" }
+        val audioOptions = audioList.distinctBy { "${it.trackKey}_${it.extension}_${it.bitrateKbps}" }
 
         if (videoOptions.isEmpty()) return null
 
