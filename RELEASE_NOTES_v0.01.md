@@ -30,7 +30,6 @@
 - **Fast**: parallel segmented downloads for healthy connections.
 - **Compatibility**: NewPipe/DirectJVM path for unusual streams.
 - Automatic fallback to the other native engine, then bundled yt-dlp with FFmpeg.
-- One global engine setting; YouDrop never asks per video.
 
 ## Privacy
 

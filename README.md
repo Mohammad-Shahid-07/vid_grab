@@ -21,7 +21,7 @@
 
 YouDrop pairs a focused YouTube browser with a serious download queue. Browse in a clean dark interface, block ads and trackers, keep audio playing in the background, then save any video or playlist in the quality you actually want.
 
-No sign-up. No ad SDK. No analytics. No per-video quiz about which download engine to use.
+No sign-up. No ad SDK. No analytics.
 
 > **Repository note:** the GitHub repository is still named `vid_grab` for continuity. The app is **YouDrop**.
 
@@ -56,7 +56,6 @@ The browser is part of the app, not a bolted-on WebView. Download buttons appear
 ### Built for real downloads
 
 - **Three-stage engine fallback.** Fast segmented range downloads, then the NewPipe/DirectJVM path, then bundled yt-dlp with FFmpeg.
-- **Global engine choice.** Pick Fast or Compatibility once; running downloads keep the engine they started with.
 - **1-5 parallel downloads.** Two or three is the sweet spot for most connections.
 - **Resumable queue.** Partial files and completed segments are reused after a pause, a dropped connection, or an app restart.
 - **MediaStore export.** Videos go to `Download/YouDrop`, audio to `Music/YouDrop`, and every file is indexed for other apps.
@@ -107,14 +106,12 @@ For playlists, YouDrop opens a batch sheet where you can deselect items, reorder
 
 ---
 
-## Three engines, one decision
-
-YouDrop never asks you to pick an engine for each video. Choose once in **Settings → Download Engine**:
+## Three download engines
 
 - **Fast** — parallel segmented range downloads for the best speed on healthy connections.
 - **Compatibility** — the older NewPipe/DirectJVM path, slower but better at unusual streams and containers.
 
-Behind that choice sits an automatic fallback chain: if the selected engine fails, the other native engine is tried, then yt-dlp. A download that started on one engine stays on it when resumed, so partial files are never silently restarted.
+If one native engine fails, YouDrop tries the other, then yt-dlp. Partial files are reused when a download resumes.
 
 ---
 
