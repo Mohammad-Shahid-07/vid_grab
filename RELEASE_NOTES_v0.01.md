@@ -1,26 +1,43 @@
 # YouDrop v0.01
 
-**The first public build of YouDrop — a private, ad-free YouTube browser and multi-engine downloader for Android.**
+**The first public release of YouDrop: a private, ad-free YouTube browser and downloader for Android.**
 
 <img src="https://raw.githubusercontent.com/Mohammad-Shahid-07/vid_grab/main/assets/branding/banner.png" alt="YouDrop" width="100%" />
 
-## Highlights
+## Browse
 
-- **Built-in YouTube browser** with download actions injected on videos, Shorts and playlists.
-- **Ad and tracker blocking**, background audio, and a clean dark interface.
-- **Video or audio downloads** with quality, codec, container and audio-track selection.
-- **Up to 4K** when the source provides it, from 144p data-saver presets to 2160p.
-- **Playlist batches** with item selection, ordering and optional `01`, `02` numbering.
-- **1-5 parallel downloads** and a global Fast / Compatibility engine setting.
-- **Automatic engine fallback** from the fast segmented downloader to the compatibility path, then bundled yt-dlp with FFmpeg.
-- **Resumable queue** that reuses partial files after a pause, network drop or app restart.
-- **MediaStore export** to `Download/YouDrop` and `Music/YouDrop`.
+- Built-in YouTube browser with download buttons on videos, Shorts and playlists.
+- Ad and tracker blocking, with a switch in Settings.
+- Background audio playback when the screen is off.
+- Search, paste a URL, or share a link from another app.
+- Dark interface with multiple themes and accent tones.
 
-## The pause-during-merge fix
+## Download
 
-This release includes a rewrite of the pause/resume lifecycle around the final merge step.
+- Video or audio-only downloads.
+- Quality presets from 144p to 4K when the source provides it.
+- Video codec, container and audio-track selection.
+- Playlist batches with item selection, ordering and `01`, `02` numbering.
+- Subtitle and chapter embedding when available.
+- Folder presets for Downloads, Music and Movies.
+- 1-5 simultaneous downloads.
+- Pause, resume and retry without discarding completed bytes; the queue survives app restarts.
+- Background progress notifications and a battery-optimization exemption for long jobs.
+- MediaStore export to `Download/YouDrop` and `Music/YouDrop`.
 
-Previously, pausing a task while it displayed `MERGING` and then resuming could restart the transfer from zero. YouDrop now writes a `.vidgrab-active-engine` marker (`fast`, `jvm`, `ytdlp1` or `ytdlp2`) inside the task working directory before each engine or yt-dlp stage starts. On resume it continues with the same engine, session and partial files. Tasks paused by older builds are inferred from their sandbox files. An explicit pause can also no longer be converted back to `PENDING` by the engine's cleanup block.
+## Engines
+
+- **Fast**: parallel segmented downloads for healthy connections.
+- **Compatibility**: NewPipe/DirectJVM path for unusual streams.
+- Automatic fallback to the other native engine, then bundled yt-dlp with FFmpeg.
+- One global engine setting; YouDrop never asks per video.
+
+## Privacy
+
+- No sign-up, analytics, crash reporting or ad SDK.
+- Cookies and downloads stay on your device.
+- Android 10 (API 29) or newer.
+- Open source under GPL-3.0.
 
 ## Install
 
@@ -36,8 +53,6 @@ Previously, pausing a task while it displayed `MERGING` and then resuming could 
 | `YouDrop-v0.01-x86_64.apk` | Emulators and x86 Chromebooks | 64 MB |
 | `YouDrop-v0.01-universal.apk` | Works on every supported ABI | 215 MB |
 
-**Requirements:** Android 10 (API 29) or newer.
-
 Verify downloads with `SHA256SUMS.txt`:
 
 ```bash
@@ -50,7 +65,7 @@ sha256sum -c SHA256SUMS.txt
 - YouTube changes can break extraction until the bundled engines catch up.
 - Private, protected, DRM and age-restricted content is not supported.
 - 4K availability depends on the source video.
-- This is an early release (`0.01`); expect rough edges and report them with a logcat if possible.
+- This is an early release (`0.01`); report issues with a logcat if possible.
 
 ## License and legal
 

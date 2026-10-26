@@ -116,10 +116,6 @@ YouDrop never asks you to pick an engine for each video. Choose once in **Settin
 
 Behind that choice sits an automatic fallback chain: if the selected engine fails, the other native engine is tried, then yt-dlp. A download that started on one engine stays on it when resumed, so partial files are never silently restarted.
 
-### New in v0.01: pause/resume that actually resumes
-
-Pausing during the final merge could previously restart the transfer when you resumed. YouDrop now records the active engine and stage inside the task directory, then resumes with the same engine, session and partial files. Existing paused tasks from older builds are inferred from their sandbox files.
-
 ---
 
 ## Build from source
