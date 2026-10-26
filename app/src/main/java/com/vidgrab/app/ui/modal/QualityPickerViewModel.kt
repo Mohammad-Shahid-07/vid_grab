@@ -52,10 +52,11 @@ sealed interface QualityPickerUiState {
 
         /** Container of the finished file, derived from the video + audio pair. */
         val effectiveOutputContainer: String
-            get() = if (isAudioOnlyTab) {
-                selectedAudioExtension
-            } else {
-                resolveOutputContainer(selectedVideoOption, effectiveMergeAudio)
+            get() = when {
+                isAudioOnlyTab -> selectedAudioExtension
+                mediaInfo is ResolvedMediaInfo.PlaylistOrChannel ->
+                    resolveBatchContainer(batchVideoCodec, batchMergeAudioExtension)
+                else -> resolveOutputContainer(selectedVideoOption, effectiveMergeAudio)
             }
 
         /**
@@ -376,7 +377,13 @@ class QualityPickerViewModel : ViewModel() {
                 }
             }
         } else {
-            0L
+            // Same estimate the picker shows on its CTA, so the queued task and the sheet agree.
+            estimateBatchSize(
+                height = state.selectedVideoHeight,
+                durationSeconds = totalSelectedDuration,
+                videoCodec = state.batchVideoCodec,
+                audioPreference = state.batchMergeAudioExtension
+            ).totalBytes
         }
 
         val batchItems = if (state.addNumberPrefix) {
@@ -455,21 +462,6 @@ class QualityPickerViewModel : ViewModel() {
         )
     }
 
-    /**
-     * Chooses the output container for a playlist preference pair. Same legality rules as single
-     * videos: VP9+Opus in WebM, AVC/AV1+AAC in MP4, mixed pairs in MKV.
-     */
-    private fun resolveBatchContainer(videoCodec: String, audioPreference: String): String {
-        val video = videoCodec.trim().uppercase()
-        val audio = audioPreference.trim().uppercase()
-        return when {
-            video == "VP9" && (audio == "AUTO" || audio == "OPUS") -> "webm"
-            video == "VP9" && audio == "M4A" -> "mkv"
-            (video == "H.264" || video == "AV1" || video == "AUTO") && audio == "OPUS" -> "mkv"
-            else -> "mp4"
-        }
-    }
-
     companion object {
         /** How long a resolved picker result stays valid for instant reopen (videos and playlists). */
         private const val CACHE_TTL_MS = 5 * 60 * 1000L
@@ -529,4 +521,55 @@ internal fun resolveMergeAudio(
 
     return base.filter { it.isOriginalOrDefault }.maxByOrNull { it.bitrateKbps }
         ?: base.maxByOrNull { it.bitrateKbps }
+}
+
+/**
+ * Chooses the output container for a playlist preference pair. Same legality rules as single
+ * videos: VP9+Opus in WebM, AVC/AV1+AAC in MP4, mixed pairs in MKV.
+ */
+internal fun resolveBatchContainer(videoCodec: String, audioPreference: String): String {
+    val video = videoCodec.trim().uppercase()
+    val audio = audioPreference.trim().uppercase()
+    return when {
+        video == "VP9" && (audio == "AUTO" || audio == "OPUS") -> "webm"
+        video == "VP9" && audio == "M4A" -> "mkv"
+        (video == "H.264" || video == "AV1" || video == "AUTO") && audio == "OPUS" -> "mkv"
+        else -> "mp4"
+    }
+}
+
+/** Split estimate so the picker can show `video + audio = total` for a whole playlist. */
+internal data class BatchSizeEstimate(val videoBytes: Long, val audioBytes: Long) {
+    val totalBytes: Long get() = videoBytes + audioBytes
+}
+
+/**
+ * Playlist items are only resolved at download time, so the picker can never know their exact
+ * bitrates. This deterministic estimate uses the same height→bitrate table and audio preference
+ * as the queued request, which keeps the CTA and the task card consistent.
+ */
+internal fun estimateBatchSize(
+    height: Int,
+    durationSeconds: Long,
+    videoCodec: String,
+    audioPreference: String
+): BatchSizeEstimate {
+    if (durationSeconds <= 0L) return BatchSizeEstimate(0L, 0L)
+    val videoBps = when {
+        height >= 2160 -> 15_000_000L
+        height >= 1440 -> 8_000_000L
+        height >= 1080 -> 4_000_000L
+        height >= 720 -> 2_000_000L
+        height >= 480 -> 1_000_000L
+        else -> 500_000L
+    }
+    val audioKbps = when (audioPreference.trim().uppercase()) {
+        "M4A" -> 128
+        "OPUS" -> 160
+        else -> if (videoCodec.equals("VP9", ignoreCase = true)) 160 else 128
+    }
+    return BatchSizeEstimate(
+        videoBytes = (videoBps * durationSeconds) / 8L,
+        audioBytes = (audioKbps * 1000L * durationSeconds) / 8L
+    )
 }

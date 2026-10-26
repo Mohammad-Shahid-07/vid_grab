@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import timber.log.Timber
 import java.io.File
 import java.io.FileInputStream
@@ -14,7 +15,8 @@ import java.io.FileOutputStream
 
 data class ExportResult(
     val contentUri: String,
-    val displayPath: String
+    val displayPath: String,
+    val sizeBytes: Long = 0L
 )
 
 /**
@@ -89,9 +91,18 @@ object MediaStoreExporter {
         } else {
             Environment.DIRECTORY_DOWNLOADS
         }
-        val subName = effectiveFolder.substringAfter('/', "YouDrop")
+        val rawSubName = effectiveFolder.substringAfter('/', "YouDrop")
+        val subName = rawSubName.replace(Regex("[^A-Za-z0-9 _.-]"), "_")
+            .split('/')
+            .filter { it.isNotBlank() && it != "." && it != ".." }
+            .joinToString("/")
+            .ifBlank { "YouDrop" }
 
-        val publicDir = File(Environment.getExternalStoragePublicDirectory(baseDirType), subName)
+        val basePublicDir = Environment.getExternalStoragePublicDirectory(baseDirType)
+        val publicDir = File(basePublicDir, subName)
+        if (!publicDir.canonicalPath.startsWith(basePublicDir.canonicalPath)) {
+            Timber.w("Path traversal detected in folder: %s; falling back to YouDrop", rawSubName)
+        }
         if (!publicDir.exists()) publicDir.mkdirs()
 
         var fileName = "$sanitizedTitle$extSuffix"
@@ -127,7 +138,12 @@ object MediaStoreExporter {
 
                 resolver.openOutputStream(itemUri)?.use { outStream ->
                     FileInputStream(sourceFile).use { inStream ->
-                        inStream.copyTo(outStream)
+                        val outChannel = (outStream as? FileOutputStream)?.channel
+                        if (outChannel != null) {
+                            inStream.channel.transferTo(0, sourceFile.length(), outChannel)
+                        } else {
+                            inStream.copyTo(outStream)
+                        }
                     }
                 } ?: throw IllegalStateException("Could not open output stream for MediaStore URI: $itemUri")
 
@@ -137,18 +153,39 @@ object MediaStoreExporter {
 
                 val displayPath = "/storage/emulated/0/$relativeSubDir/$fileName"
                 MediaScannerConnection.scanFile(context, arrayOf(displayPath), arrayOf(mimeType), null)
-                Timber.i("Successfully exported to MediaStore: %s -> %s", fileName, itemUri)
+                val exportedBytes = querySizeBytes(context, itemUri).takeIf { it > 0L }
+                    ?: sourceFile.length()
+                Timber.i("Successfully exported to MediaStore: %s -> %s (%d bytes)", fileName, itemUri, exportedBytes)
 
                 return ExportResult(
                     contentUri = itemUri.toString(),
-                    displayPath = displayPath
+                    displayPath = displayPath,
+                    sizeBytes = exportedBytes
                 )
             } catch (e: Exception) {
                 Timber.w(e, "MediaStore export failed; executing fail-safe legacy export")
-                return exportViaDirectFilesystem(context, sourceFile, fileName, mimeType, publicDir)
+                return try {
+                    exportViaDirectFilesystem(context, sourceFile, fileName, mimeType, publicDir)
+                } catch (ex: Exception) {
+                    Timber.e(ex, "Direct filesystem export also failed. Preserving completed file in private app storage.")
+                    ExportResult(
+                        contentUri = Uri.fromFile(sourceFile).toString(),
+                        displayPath = sourceFile.absolutePath,
+                        sizeBytes = sourceFile.length()
+                    )
+                }
             }
         } else {
-            return exportViaDirectFilesystem(context, sourceFile, fileName, mimeType, publicDir)
+            return try {
+                exportViaDirectFilesystem(context, sourceFile, fileName, mimeType, publicDir)
+            } catch (ex: Exception) {
+                Timber.e(ex, "Direct filesystem export failed. Preserving completed file in private app storage.")
+                ExportResult(
+                    contentUri = Uri.fromFile(sourceFile).toString(),
+                    displayPath = sourceFile.absolutePath,
+                    sizeBytes = sourceFile.length()
+                )
+            }
         }
     }
 
@@ -174,7 +211,7 @@ object MediaStoreExporter {
 
         FileInputStream(sourceFile).use { inStream ->
             FileOutputStream(targetFile).use { outStream ->
-                inStream.copyTo(outStream)
+                inStream.channel.transferTo(0, sourceFile.length(), outStream.channel)
             }
         }
 
@@ -184,8 +221,40 @@ object MediaStoreExporter {
         Timber.i("Exported via direct filesystem: %s", targetFile.absolutePath)
         return ExportResult(
             contentUri = uri,
-            displayPath = targetFile.absolutePath
+            displayPath = targetFile.absolutePath,
+            sizeBytes = targetFile.length()
         )
+    }
+
+    /** Reads the byte count MediaStore/OpenableColumns reports for a content or file URI. */
+    fun sizeBytesOf(context: Context, uriString: String?): Long {
+        if (uriString.isNullOrBlank()) return 0L
+        return try {
+            val uri = Uri.parse(uriString)
+            when (uri.scheme) {
+                "file" -> uri.path?.let { File(it).length() } ?: 0L
+                "content" -> querySizeBytes(context, uri)
+                else -> 0L
+            }
+        } catch (e: Exception) {
+            Timber.d(e, "Could not read size for %s", uriString)
+            0L
+        }
+    }
+
+    private fun querySizeBytes(context: Context, uri: Uri): Long {
+        return try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index) else 0L
+                    } else 0L
+                } ?: 0L
+        } catch (e: Exception) {
+            Timber.d(e, "Could not query MediaStore size for %s", uri)
+            0L
+        }
     }
 
     private fun resolveMimeType(ext: String, isAudioOnly: Boolean): String {

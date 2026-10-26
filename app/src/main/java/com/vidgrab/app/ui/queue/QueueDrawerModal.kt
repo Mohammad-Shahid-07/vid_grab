@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.fillMaxSize
 import com.vidgrab.app.core.storage.RemoteThumbnailImage
@@ -65,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import com.vidgrab.app.core.database.DownloadTaskEntity
 import com.vidgrab.app.core.database.TaskStatus
 import com.vidgrab.app.core.extractor.formatBytes
+import com.vidgrab.app.core.format.formatEta
 import com.vidgrab.app.core.queue.QueueRepository
 import com.vidgrab.app.ui.theme.AppTheme
 import timber.log.Timber
@@ -73,7 +75,8 @@ import timber.log.Timber
 @Composable
 fun QueueDrawerModal(
     queueRepository: QueueRepository,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onOpenUrl: (String) -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     val allTasks by queueRepository.allTasks.collectAsState(initial = emptyList())
@@ -260,6 +263,7 @@ fun QueueDrawerModal(
                                 CompletedTaskRow(
                                     task = task,
                                     onOpen = { openMediaFile(context, task.outputFileUri) },
+                                    onOpenYouTube = { onOpenUrl(task.url) },
                                     onDelete = { queueRepository.deleteTask(task.id) }
                                 )
                             }
@@ -314,6 +318,7 @@ fun ActiveTaskRow(
                 Box(modifier = Modifier.size(width = 68.dp, height = 44.dp)) {
                     RemoteThumbnailImage(
                         url = task.thumbnailUrl,
+                        videoId = task.videoId,
                         contentDescription = task.title,
                         fallbackIcon = if (task.isAudioOnly) Icons.Default.MusicNote else Icons.Default.PlayArrow,
                         modifier = Modifier
@@ -439,7 +444,7 @@ fun ActiveTaskRow(
                     modifier = Modifier.weight(1f, fill = false)
                 )
                 Text(
-                    text = if (task.etaSeconds > 0) "ETA ${task.etaSeconds}s" else "",
+                    text = if (task.etaSeconds > 0) "ETA ${formatEta(task.etaSeconds)}" else "",
                     fontSize = 10.sp,
                     color = theme.textSecondary
                 )
@@ -452,6 +457,7 @@ fun ActiveTaskRow(
 fun CompletedTaskRow(
     task: DownloadTaskEntity,
     onOpen: () -> Unit,
+    onOpenYouTube: () -> Unit,
     onDelete: () -> Unit
 ) {
     val theme = AppTheme.colors
@@ -474,6 +480,7 @@ fun CompletedTaskRow(
             Box(modifier = Modifier.size(width = 68.dp, height = 44.dp)) {
                 RemoteThumbnailImage(
                     url = task.thumbnailUrl,
+                    videoId = task.videoId,
                     contentDescription = task.title,
                     fallbackIcon = if (task.isAudioOnly) Icons.Default.MusicNote else Icons.Default.PlayArrow,
                     modifier = Modifier
@@ -534,6 +541,16 @@ fun CompletedTaskRow(
             // Open Action
             IconButton(onClick = onOpen, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.Default.FileOpen, contentDescription = "Open", tint = accent.color, modifier = Modifier.size(18.dp))
+            }
+
+            // Open on YouTube (in-app browser)
+            IconButton(onClick = onOpenYouTube, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Default.SmartDisplay,
+                    contentDescription = "Open on YouTube",
+                    tint = accent.color,
+                    modifier = Modifier.size(18.dp)
+                )
             }
 
             // Delete Action

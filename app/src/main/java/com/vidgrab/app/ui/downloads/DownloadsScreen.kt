@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -75,6 +76,7 @@ import androidx.core.net.toUri
 import com.vidgrab.app.core.database.DownloadTaskEntity
 import com.vidgrab.app.core.database.TaskStatus
 import com.vidgrab.app.core.extractor.formatBytes
+import com.vidgrab.app.core.format.formatEta
 import com.vidgrab.app.core.queue.QueueRepository
 import com.vidgrab.app.ui.common.AsyncThumbnailImage
 import com.vidgrab.app.ui.theme.AppTheme
@@ -85,7 +87,8 @@ import java.util.Locale
 @Composable
 fun DownloadsScreen(
     queueRepository: QueueRepository,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onOpenUrl: (String) -> Unit
 ) {
     BackHandler { onNavigateBack() }
 
@@ -346,6 +349,7 @@ fun DownloadsScreen(
                                 CompletedDownloadCard(
                                     task = task,
                                     onOpen = { openMediaFile(context, task.outputFileUri) },
+                                    onOpenYouTube = { onOpenUrl(task.url) },
                                     onDelete = { queueRepository.deleteTask(task.id) }
                                 )
                             }
@@ -385,6 +389,7 @@ fun DownloadsScreen(
                                 CompletedDownloadCard(
                                     task = task,
                                     onOpen = { openMediaFile(context, task.outputFileUri) },
+                                    onOpenYouTube = { onOpenUrl(task.url) },
                                     onDelete = { queueRepository.deleteTask(task.id) }
                                 )
                             }
@@ -550,7 +555,14 @@ fun DownloadCard(
         task.status == TaskStatus.FAILED -> "Download interrupted • Tap retry"
         isConnecting -> {
             val totalSuffix = if (totalStr.isNotEmpty()) " • $totalStr" else ""
-            if (elapsedMs < 5000L) "Connecting$totalSuffix..." else "Download will start in a moment$totalSuffix..."
+            // Surface the engine's real stage ("Preparing...", "Connecting...") instead of flipping
+            // between two generic labels while the fallback chain runs.
+            val stage = sanitizedSpeed.trim().trimEnd('.')
+            when {
+                stage.isNotBlank() && !stage.equals("Connecting", ignoreCase = true) -> "$stage$totalSuffix..."
+                elapsedMs < 5000L -> "Connecting$totalSuffix..."
+                else -> "Download will start in a moment$totalSuffix..."
+            }
         }
         else -> {
             val pct = "${task.progressPercent.toInt()}%"
@@ -580,6 +592,7 @@ fun DownloadCard(
                 Box(modifier = Modifier.size(width = 68.dp, height = 46.dp)) {
                     AsyncThumbnailImage(
                         url = task.thumbnailUrl,
+                        videoId = task.videoId,
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(RoundedCornerShape(8.dp))
@@ -695,7 +708,7 @@ fun DownloadCard(
                 )
                 if (!isConnecting && task.etaSeconds > 0) {
                     Text(
-                        text = "ETA ${task.etaSeconds}s",
+                        text = "ETA ${formatEta(task.etaSeconds)}",
                         fontSize = 11.sp,
                         color = theme.textSecondary
                     )
@@ -709,6 +722,7 @@ fun DownloadCard(
 fun CompletedDownloadCard(
     task: DownloadTaskEntity,
     onOpen: () -> Unit,
+    onOpenYouTube: () -> Unit,
     onDelete: () -> Unit
 ) {
     val theme = AppTheme.colors
@@ -731,6 +745,7 @@ fun CompletedDownloadCard(
             Box(modifier = Modifier.size(width = 68.dp, height = 46.dp)) {
                 AsyncThumbnailImage(
                     url = task.thumbnailUrl,
+                    videoId = task.videoId,
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(8.dp))
@@ -776,6 +791,16 @@ fun CompletedDownloadCard(
             // Open Action
             IconButton(onClick = onOpen, modifier = Modifier.size(34.dp)) {
                 Icon(Icons.Default.FileOpen, contentDescription = "Open", tint = accent.color, modifier = Modifier.size(18.dp))
+            }
+
+            // Open on YouTube (in-app browser)
+            IconButton(onClick = onOpenYouTube, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Default.SmartDisplay,
+                    contentDescription = "Open on YouTube",
+                    tint = accent.color,
+                    modifier = Modifier.size(18.dp)
+                )
             }
 
             // Delete Action

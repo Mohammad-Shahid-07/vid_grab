@@ -43,6 +43,15 @@ class YouTubeJsBridge(
         WebViewSessionManager.updateSessionTokens(poToken, visitorData)
     }
 
+    /**
+     * Page chrome state for the native download chip: whether a watch/shorts player is on screen
+     * (chip hides so it can never float over the video) and which theme YouTube is using.
+     */
+    @JavascriptInterface
+    fun onPageChromeState(playerVisible: Boolean, isDarkTheme: Boolean) {
+        WebViewSessionManager.updatePageChrome(playerVisible, isDarkTheme)
+    }
+
     @JavascriptInterface
     fun onPlayerResponse(videoId: String?, json: String?) {
         if (!videoId.isNullOrBlank() && !json.isNullOrBlank()) {
@@ -130,7 +139,13 @@ class YouTubeJsBridge(
             com.vidgrab.app.core.extractor.DualEngineMetadataResolver.sanitizeMediaUrl(url)
         }
 
-        val effectiveType = if (isPlaylist) "PLAYLIST" else if (videoId != null) "VIDEO" else "PAGE"
+        val isChannel = url.contains("/@") || url.contains("/channel/") || url.contains("/c/") || url.contains("/user/")
+        val effectiveType = when {
+            isPlaylist -> "PLAYLIST"
+            !videoId.isNullOrBlank() -> "VIDEO"
+            isChannel -> "CHANNEL"
+            else -> "PAGE"
+        }
         Timber.i("YouTubeJsBridge: onFabPayloadReady [type=%s, cleanUrl=%s, hasPlaylistItems=%b]",
             effectiveType, cleanUrl, !playlistItemsJson.isNullOrBlank())
 

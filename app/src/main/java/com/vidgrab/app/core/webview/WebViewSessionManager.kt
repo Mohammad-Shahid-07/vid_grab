@@ -31,11 +31,31 @@ object WebViewSessionManager {
         val timestamp: Long = System.currentTimeMillis()
     )
 
+    /**
+     * Chrome state reported by the page itself: whether a watch/shorts player currently occupies
+     * the viewport, and whether YouTube is rendering its dark theme. The native download chip uses
+     * both so it can match the page and stay off the video.
+     */
+    data class PageChrome(
+        val playerVisible: Boolean = false,
+        val isDarkTheme: Boolean = true
+    )
+
     private val _sessionTokens = MutableStateFlow(SessionTokens())
     val sessionTokens: StateFlow<SessionTokens> = _sessionTokens.asStateFlow()
 
     private val _latestWatchMetadata = MutableStateFlow<WatchPageMetadata?>(null)
     val latestWatchMetadata: StateFlow<WatchPageMetadata?> = _latestWatchMetadata.asStateFlow()
+
+    private val _pageChrome = MutableStateFlow(PageChrome())
+    val pageChrome: StateFlow<PageChrome> = _pageChrome.asStateFlow()
+
+    fun updatePageChrome(playerVisible: Boolean, isDarkTheme: Boolean) {
+        val next = PageChrome(playerVisible = playerVisible, isDarkTheme = isDarkTheme)
+        if (_pageChrome.value != next) {
+            _pageChrome.value = next
+        }
+    }
 
     @Volatile
     var currentPoToken: String? = null
@@ -135,7 +155,7 @@ object WebViewSessionManager {
                 return null
             }
 
-            val cookiesFile = File(context.filesDir, "cookies.txt")
+            val cookiesFile = File(context.noBackupFilesDir, "cookies.txt")
             FileWriter(cookiesFile, false).use { writer ->
                 // Exact Python MozillaCookieJar header specification
                 writer.write("# Netscape HTTP Cookie File\n")

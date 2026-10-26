@@ -34,6 +34,18 @@ object DirectJvmStreamDownloader {
 
     private const val CHUNK_SIZE = 2 * 1024 * 1024L // 2MB chunking for YouTube CDN
 
+    /**
+     * The 1-byte size probe runs on a 6 s deadline. On the shared client (20 s connect / 25 s read)
+     * a stalled probe kept the whole task sitting at "Connecting..." before requesting any bytes.
+     */
+    private val probeClient by lazy {
+        App.sharedOkHttpClient.newBuilder()
+            .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(9, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     suspend fun download(
         context: Context,
         task: DownloadTaskEntity,
@@ -305,7 +317,7 @@ object DirectJvmStreamDownloader {
 
         for (candidate in muxCandidates) {
             if (candidate.exists()) candidate.delete()
-            if (runFFmpegMux(context, tempVideo, tempAudio, candidate) &&
+            if (runFFmpegMux(context, tempVideo, tempAudio, candidate, isCancelled) &&
                 candidate.exists() && candidate.length() > 0
             ) {
                 tempVideo.delete()
@@ -362,7 +374,7 @@ object DirectJvmStreamDownloader {
                         partFile.absolutePath
                     )
                     val proc = ProcessBuilder(cmd).directory(parentDir).redirectErrorStream(true).start()
-                    val code = proc.waitFor()
+                    val code = runProcessSafely(proc, timeoutSeconds = 600L) { isCancelled() }
                     if (code == 0 && partFile.exists() && partFile.length() > 0) {
                         keepParts.add(partFile)
                     }
@@ -382,7 +394,7 @@ object DirectJvmStreamDownloader {
                 lastPartFile.absolutePath
             )
             val lastProc = ProcessBuilder(lastCmd).directory(parentDir).redirectErrorStream(true).start()
-            val lastCode = lastProc.waitFor()
+            val lastCode = runProcessSafely(lastProc, timeoutSeconds = 600L) { isCancelled() }
             if (lastCode == 0 && lastPartFile.exists() && lastPartFile.length() > 0) {
                 keepParts.add(lastPartFile)
             }
@@ -404,7 +416,7 @@ object DirectJvmStreamDownloader {
                     finalTrimmed.absolutePath
                 )
                 val concatProc = ProcessBuilder(concatCmd).directory(parentDir).redirectErrorStream(true).start()
-                val concatCode = concatProc.waitFor()
+                val concatCode = runProcessSafely(concatProc, timeoutSeconds = 600L) { isCancelled() }
 
                 keepParts.forEach { it.delete() }
                 concatList.delete()
@@ -421,6 +433,38 @@ object DirectJvmStreamDownloader {
         return inputFile
     }
 
+    private fun runProcessSafely(
+        proc: Process,
+        timeoutSeconds: Long = 600L,
+        isCancelled: () -> Boolean = { false }
+    ): Int {
+        val drainThread = kotlin.concurrent.thread(isDaemon = true, name = "ffmpeg-drain") {
+            try {
+                proc.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line -> Timber.v("FFmpeg: %s", line) }
+                }
+            } catch (_: Exception) {}
+        }
+
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutSeconds * 1000L) {
+            if (isCancelled()) {
+                proc.destroyForcibly()
+                drainThread.interrupt()
+                return -1
+            }
+            if (proc.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                drainThread.join(500)
+                return proc.exitValue()
+            }
+        }
+
+        proc.destroyForcibly()
+        drainThread.interrupt()
+        Timber.e("FFmpeg process timed out after %d seconds", timeoutSeconds)
+        return -1
+    }
+
     private fun findFFmpegExecutable(context: Context): File? {
         val candidates = listOf(
             File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/bin/ffmpeg"),
@@ -430,7 +474,13 @@ object DirectJvmStreamDownloader {
         return candidates.firstOrNull { it.exists() }
     }
 
-    private fun runFFmpegMux(context: Context, videoFile: File, audioFile: File, outputFile: File): Boolean {
+    private fun runFFmpegMux(
+        context: Context,
+        videoFile: File,
+        audioFile: File,
+        outputFile: File,
+        isCancelled: () -> Boolean = { false }
+    ): Boolean {
         return try {
             val ffmpegBin = findFFmpegExecutable(context)
                 ?: throw IllegalStateException("FFmpeg executable not found")
@@ -450,7 +500,7 @@ object DirectJvmStreamDownloader {
                 .redirectErrorStream(true)
                 .start()
 
-            val exitCode = process.waitFor()
+            val exitCode = runProcessSafely(process, timeoutSeconds = 600L) { isCancelled() }
             Timber.i("DirectJvm: FFmpeg exited with code %d", exitCode)
             outputFile.exists() && outputFile.length() > 0
         } catch (e: Exception) {
@@ -468,8 +518,6 @@ object DirectJvmStreamDownloader {
         isCancelled: () -> Boolean,
         onProgress: suspend (Float, Long, String) -> Unit
     ) {
-        val client = App.sharedOkHttpClient
-
         // Attempt 1: Check Content-Length via lightweight Range request
         var totalBytes = -1L
         try {
@@ -479,7 +527,7 @@ object DirectJvmStreamDownloader {
                 .header("Range", "bytes=0-1")
                 .build()
 
-            client.newCall(testReq).execute().use { response ->
+            probeClient.newCall(testReq).execute().use { response ->
                 if (response.code == 206) {
                     val cr = response.header("Content-Range")
                     totalBytes = cr?.substringAfter('/')?.toLongOrNull() ?: -1L
@@ -571,7 +619,9 @@ object DirectJvmStreamDownloader {
                     attempts++
                     try {
                         client.newCall(chunkReq).execute().use { res ->
-                            if (!res.isSuccessful && res.code != 206) {
+                            if (res.code != 206 && (currentStart > 0 || currentEnd < totalBytes - 1)) {
+                                throw IllegalStateException("Expected HTTP 206 Partial Content for byte range $currentStart-$currentEnd, got HTTP ${res.code}")
+                            } else if (!res.isSuccessful) {
                                 throw IllegalStateException("HTTP ${res.code} downloading chunk bytes $currentStart-$currentEnd")
                             }
 
@@ -579,12 +629,14 @@ object DirectJvmStreamDownloader {
                             val stream: InputStream = body.byteStream()
                             val buf = ByteArray(64 * 1024)
                             var bytesRead: Int
+                            var chunkBytesRead = 0L
 
                             raf.seek(currentStart)
                             while (stream.read(buf).also { bytesRead = it } != -1) {
                                 if (isCancelled()) throw InterruptedException("Download cancelled")
                                 raf.write(buf, 0, bytesRead)
-                                downloadedBytes += bytesRead
+                                chunkBytesRead += bytesRead
+                                downloadedBytes = currentStart + chunkBytesRead
 
                                 val now = System.currentTimeMillis()
                                 if (now - lastEmitTimeMs >= 250L || downloadedBytes == totalBytes) {

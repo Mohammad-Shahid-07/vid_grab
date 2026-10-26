@@ -11,6 +11,8 @@ import com.vidgrab.app.core.database.TaskStatus
 import com.vidgrab.app.core.engine.DownloadEngineExecutor
 import com.vidgrab.app.core.extractor.DownloadRequestSpec
 import com.vidgrab.app.core.extractor.DualEngineMetadataResolver
+import com.vidgrab.app.core.storage.MediaStoreExporter
+import com.vidgrab.app.core.storage.ThumbnailStore
 import com.vidgrab.app.core.worker.DownloadNotificationManager
 import com.vidgrab.app.core.worker.DownloadQueueWorker
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +22,7 @@ import kotlinx.coroutines.launch
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import timber.log.Timber
+import java.io.File
 import java.util.UUID
 
 class QueueRepository(private val context: Context) {
@@ -32,6 +35,15 @@ class QueueRepository(private val context: Context) {
     val allTasks: Flow<List<DownloadTaskEntity>> = dao.getAllTasksFlow()
     val activeTasks: Flow<List<DownloadTaskEntity>> = dao.getActiveTasksFlow()
     val completedTasks: Flow<List<DownloadTaskEntity>> = dao.getCompletedTasksFlow()
+
+    init {
+        // Older builds stored the picker's bitrate estimate as the completed size (and only ever
+        // let it grow). Correct every completed row once the real file can be queried.
+        scope.launch {
+            runCatching { reconcileCompletedSizes() }
+                .onFailure { Timber.w(it, "Could not reconcile completed download sizes") }
+        }
+    }
 
     fun enqueue(spec: DownloadRequestSpec) {
         scope.launch {
@@ -81,6 +93,7 @@ class QueueRepository(private val context: Context) {
                         )
                     }
                     dao.insertTasks(entities)
+                    prefetchThumbnails(entities)
                     Timber.i("QueueRepository: Enqueued %d batch items for playlist: %s", entities.size, spec.title)
                 } else if (spec.batchUrls.isNotEmpty()) {
                     val defaultItemBytes = estimateItemBytes(
@@ -120,6 +133,7 @@ class QueueRepository(private val context: Context) {
                         )
                     }
                     dao.insertTasks(entities)
+                    prefetchThumbnails(entities)
                     Timber.i("QueueRepository: Enqueued %d batch items for playlist: %s", entities.size, spec.title)
                 } else {
                     // Lazy Expansion: Expand playlist on the fly via NewPipeExtractor
@@ -165,11 +179,40 @@ class QueueRepository(private val context: Context) {
                     mergeAudioBitrateKbps = spec.mergeAudioBitrateKbps
                 )
                 dao.insertTask(entity)
+                ThumbnailStore.prefetch(effectiveThumb, targetVid)
                 Timber.i("QueueRepository: Enqueued single download: %s [%s] with thumb: %s", spec.title, spec.formatSelector, effectiveThumb)
             }
 
             // Trigger WorkManager UIDT sequential execution
             startQueueWorker()
+        }
+    }
+
+    private fun prefetchThumbnails(tasks: List<DownloadTaskEntity>) {
+        // Warm the local image cache in the background; playback and the worker are never blocked.
+        tasks.forEach { task ->
+            scope.launch { ThumbnailStore.prefetch(task.thumbnailUrl, task.videoId) }
+        }
+    }
+
+    private suspend fun reconcileCompletedSizes() {
+        val completed = dao.getCompletedTasks()
+        if (completed.isEmpty()) return
+
+        var corrected = 0
+        for (task in completed) {
+            val fromUri = MediaStoreExporter.sizeBytesOf(context, task.outputFileUri)
+            val fromPath = task.outputFilePath
+                ?.let { path -> File(path).length().takeIf { it > 0L } }
+                ?: 0L
+            val realSize = fromUri.takeIf { it > 0L } ?: fromPath
+            if (realSize > 0L && (task.totalBytes != realSize || task.downloadedBytes != realSize)) {
+                dao.correctCompletedSize(task.id, realSize)
+                corrected++
+            }
+        }
+        if (corrected > 0) {
+            Timber.i("QueueRepository: Corrected file sizes for %d completed task(s)", corrected)
         }
     }
 
@@ -238,10 +281,11 @@ class QueueRepository(private val context: Context) {
                 )
             }
             dao.insertTasks(entities)
+            prefetchThumbnails(entities)
             Timber.i("QueueRepository: Lazily expanded and enqueued %d playlist items", entities.size)
         } catch (e: Exception) {
             Timber.e(e, "Failed to lazily expand playlist: %s", spec.url)
-            // Fallback: enqueue parent URL directly as single task
+            // Never enqueue a playlist URL as a single PENDING task (which would only download video 1). Mark as FAILED.
             val fallback = DownloadTaskEntity(
                 id = spec.id,
                 url = spec.url,
@@ -254,7 +298,8 @@ class QueueRepository(private val context: Context) {
                 useAria2c = spec.enableAria2c,
                 queueGroup = System.currentTimeMillis(),
                 queueIndex = 0,
-                status = TaskStatus.PENDING,
+                status = TaskStatus.FAILED,
+                errorMessage = "Failed to load playlist: ${e.localizedMessage ?: "Unknown error"}",
                 totalBytes = spec.expectedSizeBytes,
                 cutSponsor = spec.cutSponsor,
                 embedSubtitles = spec.embedSubtitles,
@@ -269,7 +314,8 @@ class QueueRepository(private val context: Context) {
     fun startQueueWorker() {
         scope.launch {
             val activeCount = dao.getActiveDownloadingCount()
-            val policy = if (activeCount == 0) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
+            // Always KEEP so existing live worker and active downloads are never cancelled mid-flight
+            val policy = ExistingWorkPolicy.KEEP
             val request = OneTimeWorkRequestBuilder<DownloadQueueWorker>()
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .build()
@@ -287,11 +333,13 @@ class QueueRepository(private val context: Context) {
         DownloadEngineExecutor.pauseTask(taskId)
         DownloadQueueWorker.cancelJob(taskId)
         scope.launch {
-            dao.updateStatus(taskId, TaskStatus.PAUSED)
-            dao.getTaskById(taskId)?.let { task ->
-                DownloadNotificationManager.postStatusNotification(context, task)
+            val updatedRows = dao.updateStatusIfNotTerminal(taskId, TaskStatus.PAUSED)
+            if (updatedRows > 0) {
+                dao.getTaskById(taskId)?.let { task ->
+                    DownloadNotificationManager.postStatusNotification(context, task)
+                }
+                Timber.i("QueueRepository: Paused task %s", taskId)
             }
-            Timber.i("QueueRepository: Paused task %s", taskId)
         }
     }
 
@@ -307,9 +355,11 @@ class QueueRepository(private val context: Context) {
     fun resumeTask(taskId: String) {
         DownloadEngineExecutor.resumeTask(taskId)
         scope.launch {
-            dao.updateStatus(taskId, TaskStatus.PENDING)
-            startQueueWorker()
-            Timber.i("QueueRepository: Resumed task %s", taskId)
+            val updatedRows = dao.updateStatusIfNotTerminal(taskId, TaskStatus.PENDING)
+            if (updatedRows > 0) {
+                startQueueWorker()
+                Timber.i("QueueRepository: Resumed task %s", taskId)
+            }
         }
     }
 
@@ -354,10 +404,37 @@ class QueueRepository(private val context: Context) {
 
     fun deleteTask(taskId: String) {
         scope.launch {
+            val task = dao.getTaskById(taskId)
             DownloadEngineExecutor.cancelTask(context, taskId)
             dao.deleteTask(taskId)
             DownloadNotificationManager.cancelProgressNotification(context, taskId)
-            Timber.i("QueueRepository: Deleted task %s from database", taskId)
+
+            task?.let { t ->
+                val uriStr = t.outputFileUri
+                if (!uriStr.isNullOrBlank()) {
+                    try {
+                        val uri = android.net.Uri.parse(uriStr)
+                        if (uri.scheme == "content") {
+                            context.contentResolver.delete(uri, null as String?, null as Array<String>?)
+                        } else if (uri.scheme == "file") {
+                            val filePath = uri.path
+                            if (!filePath.isNullOrBlank()) {
+                                File(filePath).delete()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "Could not delete media file for %s", taskId)
+                    }
+                }
+                val displayPath = t.outputFilePath
+                if (!displayPath.isNullOrBlank()) {
+                    try {
+                        val f = File(displayPath)
+                        if (f.exists()) f.delete()
+                    } catch (_: Exception) {}
+                }
+            }
+            Timber.i("QueueRepository: Deleted task %s from database and storage", taskId)
         }
     }
 

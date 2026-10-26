@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
@@ -30,6 +31,15 @@ object FastDirectDownloader {
     const val REFERER = "https://www.youtube.com/"
     const val ORIGIN = "https://www.youtube.com"
 
+    /** Per-range retries. Each retry resumes from the last byte actually written. */
+    private const val MAX_RANGE_ATTEMPTS = 3
+
+    /** Spacing between segment start-ups so 8 sockets never open in the same millisecond. */
+    private const val SEGMENT_START_STAGGER_MS = 110L
+
+    /** Thrown when the CDN rejects the signature outright; retrying cannot help. */
+    private class StreamUrlDeadException(message: String) : Exception(message)
+
     private val highSpeedDispatcher = Dispatcher().apply {
         maxRequests = 64
         maxRequestsPerHost = 32
@@ -45,6 +55,19 @@ object FastDirectDownloader {
             .readTimeout(25, TimeUnit.SECONDS)
             .writeTimeout(25, TimeUnit.SECONDS)
             .callTimeout(0, TimeUnit.MILLISECONDS) // No call timeout for large media streams
+            .build()
+    }
+
+    /**
+     * Short-deadline client for the 1-byte Content-Length probe. The stream client deliberately has
+     * no call timeout (transfers run for minutes), which let a stalled probe hold the whole task at
+     * "Connecting..." for the full 25 s read timeout before a single byte was requested.
+     */
+    private val probeHttpClient by lazy {
+        com.vidgrab.app.App.sharedOkHttpClient.newBuilder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(6, TimeUnit.SECONDS)
+            .callTimeout(9, TimeUnit.SECONDS)
             .build()
     }
 
@@ -361,6 +384,11 @@ object FastDirectDownloader {
                     if (taskId != null && DownloadEngineExecutor.isPaused(taskId)) {
                         throw kotlinx.coroutines.CancellationException("Task $taskId was paused")
                     }
+                    // Opening 8 ranged connections in the same millisecond is what makes
+                    // googlevideo answer 429/503 on mobile networks; a small ramp avoids it.
+                    if (index > 0 && segment.nextOffset <= segment.end) {
+                        delay(SEGMENT_START_STAGGER_MS * index)
+                    }
                     activeConns.incrementAndGet()
                     try {
                         val from = segment.nextOffset
@@ -391,6 +419,14 @@ object FastDirectDownloader {
         }
     }
 
+    /**
+     * Downloads one range, retrying only the bytes that have not arrived yet.
+     *
+     * A single transient failure used to abort the whole engine: with 8 sockets open, one 429 or
+     * one dropped connection discarded every byte already on disk and pushed the task onto the
+     * slower JVM/yt-dlp fallbacks (the 30–60 s "Connecting/Downloading" flap users see). Now a
+     * failed range resumes from its own last written offset, and only a dead URL aborts instantly.
+     */
     private suspend fun downloadByteRange(
         taskId: String?,
         url: String,
@@ -400,13 +436,70 @@ object FastDirectDownloader {
         expectedBytes: Long = -1L,
         onBytesRead: (Long) -> Unit
     ) {
-        val reqBuilder = createStreamRequestBuilder(url)
         val isRangeRequest = endByte >= startByte
+        val totalExpected = if (isRangeRequest) endByte - startByte + 1L else expectedBytes
+        val maxAttempts = if (isRangeRequest) MAX_RANGE_ATTEMPTS else 1
+        var written = 0L
+        var attempt = 0
+
+        while (true) {
+            attempt++
+            try {
+                written += streamByteRange(
+                    taskId = taskId,
+                    url = url,
+                    targetFile = targetFile,
+                    startByte = startByte + written,
+                    endByte = endByte,
+                    isRangeRequest = isRangeRequest,
+                    onBytesRead = onBytesRead
+                )
+                break
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: StreamUrlDeadException) {
+                // 403/410 means the signature is gone; retrying only burns the user's time.
+                throw e
+            } catch (e: Exception) {
+                if (attempt >= maxAttempts) throw e
+                Timber.w(
+                    e,
+                    "FastDirectDownloader: range %d-%d failed (attempt %d/%d), resuming at %d",
+                    startByte,
+                    endByte,
+                    attempt,
+                    maxAttempts,
+                    startByte + written
+                )
+                delay(250L * attempt)
+            }
+        }
+
+        if (totalExpected > 0L && written != totalExpected) {
+            // A truncated body must never be treated as a completed segment.
+            error("Short range read: expected $totalExpected bytes but received $written")
+        }
+    }
+
+    /** Streams one HTTP range into [targetFile] at [startByte] and returns the bytes written. */
+    private suspend fun streamByteRange(
+        taskId: String?,
+        url: String,
+        targetFile: File,
+        startByte: Long,
+        endByte: Long,
+        isRangeRequest: Boolean,
+        onBytesRead: (Long) -> Unit
+    ): Long {
+        val reqBuilder = createStreamRequestBuilder(url)
         if (isRangeRequest) {
             reqBuilder.addHeader("Range", "bytes=$startByte-$endByte")
         }
 
         streamHttpClient.newCall(reqBuilder.build()).execute().use { response ->
+            if (response.code == 403 || response.code == 410) {
+                throw StreamUrlDeadException("Stream URL rejected (HTTP ${response.code})")
+            }
             if (!response.isSuccessful) {
                 Timber.e("FastDirectDownloader: HTTP %d for url: %s", response.code, url)
                 error("Stream HTTP error: ${response.code}")
@@ -450,10 +543,7 @@ object FastDirectDownloader {
                 }
             }
 
-            if (expectedBytes > 0L && totalRead != expectedBytes) {
-                // A truncated body must never be treated as a completed segment.
-                error("Short range read: expected $expectedBytes bytes but received $totalRead")
-            }
+            return totalRead
         }
     }
 
@@ -467,7 +557,7 @@ object FastDirectDownloader {
             .addHeader("Range", "bytes=0-0")
             .build()
         return runCatching {
-            streamHttpClient.newCall(req).execute().use { res ->
+            probeHttpClient.newCall(req).execute().use { res ->
                 val contentRange = res.header("Content-Range")
                 contentRange?.substringAfterLast('/')?.toLongOrNull()
                     ?: res.header("Content-Length")?.toLongOrNull()
@@ -519,8 +609,22 @@ object FastDirectDownloader {
                 redirectErrorStream(true)
             }.start()
 
-            process.inputStream.readBytes()
-            val exitCode = process.waitFor()
+            val drainThread = kotlin.concurrent.thread(isDaemon = true, name = "fast-ffmpeg-drain") {
+                try {
+                    process.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line -> Timber.v("FFmpeg: %s", line) }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            val finished = process.waitFor(10, java.util.concurrent.TimeUnit.MINUTES)
+            if (!finished) {
+                process.destroyForcibly()
+                drainThread.interrupt()
+                return@runCatching false
+            }
+            drainThread.join(500)
+            val exitCode = process.exitValue()
             val success = exitCode == 0 && outputFile.exists() && outputFile.length() > 0L
             if (!success) {
                 Timber.w("FastDirectDownloader: FFmpeg mux failed (exit=%d)", exitCode)

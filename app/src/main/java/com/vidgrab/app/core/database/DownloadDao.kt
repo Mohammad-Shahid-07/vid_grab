@@ -70,6 +70,9 @@ interface DownloadDao {
     @Query("UPDATE download_tasks SET status = :status, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateStatus(id: String, status: TaskStatus, updatedAt: Long = System.currentTimeMillis())
 
+    @Query("UPDATE download_tasks SET status = :status, updatedAt = :updatedAt WHERE id = :id AND status NOT IN ('COMPLETED', 'CANCELLED')")
+    suspend fun updateStatusIfNotTerminal(id: String, status: TaskStatus, updatedAt: Long = System.currentTimeMillis()): Int
+
     @Query("""
         UPDATE download_tasks 
         SET progressPercent = :progress, 
@@ -104,8 +107,8 @@ interface DownloadDao {
         UPDATE download_tasks 
         SET status = 'COMPLETED', 
             progressPercent = 100.0, 
-            totalBytes = :realSizeBytes, 
-            downloadedBytes = :realSizeBytes, 
+            totalBytes = CASE WHEN :realSizeBytes > 0 THEN :realSizeBytes ELSE totalBytes END,
+            downloadedBytes = CASE WHEN :realSizeBytes > 0 THEN :realSizeBytes ELSE downloadedBytes END,
             speedText = '',
             activeConnections = 0,
             segmentProgressCsv = '',
@@ -121,6 +124,17 @@ interface DownloadDao {
         realSizeBytes: Long, 
         updatedAt: Long = System.currentTimeMillis()
     )
+
+    @Query("SELECT * FROM download_tasks WHERE status = 'COMPLETED'")
+    suspend fun getCompletedTasks(): List<DownloadTaskEntity>
+
+    @Query("""
+        UPDATE download_tasks
+        SET totalBytes = :realSizeBytes,
+            downloadedBytes = :realSizeBytes
+        WHERE id = :id AND status = 'COMPLETED' AND :realSizeBytes > 0
+    """)
+    suspend fun correctCompletedSize(id: String, realSizeBytes: Long)
 
     @Query("UPDATE download_tasks SET status = 'FAILED', errorMessage = :error, updatedAt = :updatedAt WHERE id = :id")
     suspend fun markFailed(id: String, error: String, updatedAt: Long = System.currentTimeMillis())

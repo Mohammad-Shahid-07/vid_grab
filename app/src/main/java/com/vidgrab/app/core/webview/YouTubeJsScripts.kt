@@ -504,9 +504,6 @@ object YouTubeJsScripts {
         'ytm-reel-item-renderer',
         'ytm-shorts-lockup-view-model',
         'ytm-radio-renderer',
-        'ytm-slim-video-metadata-section-renderer',
-        'ytm-playlist-header-renderer',
-        'ytm-c4-tabbed-header-renderer',
         'ytd-rich-item-renderer',
         'ytd-video-renderer',
         'ytd-compact-video-renderer',
@@ -525,12 +522,15 @@ object YouTubeJsScripts {
         if (top) return top;
         top = node.closest('ytm-reel-item-renderer, ytm-shorts-lockup-view-model');
         if (top) return top;
-        top = node.closest('ytm-slim-video-metadata-section-renderer, ytm-playlist-header-renderer, ytm-c4-tabbed-header-renderer');
-        if (top) return top;
         top = node.closest('ytm-radio-renderer, ytm-compact-channel-renderer');
         if (top) return top;
         return node.closest(CARD_CONTAINER_SELECTORS);
     }
+
+    // Detail headers (watch metadata, playlist landing page, channel page) are intentionally
+    // excluded: the native FAB owns downloads there. Only feed/card chips are injected, so the
+    // page never grows a second download button above Subscribe/Play.
+    var PAGE_CHROME_CONTAINERS = 'ytm-slim-video-metadata-section-renderer, ytm-playlist-header-renderer, ytm-c4-tabbed-header-renderer, yt-page-header-view-model';
 
     function getPlaylistVideosFromPage() {
         var items = [];
@@ -668,6 +668,8 @@ object YouTubeJsScripts {
     function createShadowButton(cardNode) {
         var topCard = getTopCard(cardNode);
         if (!topCard) return;
+        // Never inject into a page-level header (the native FAB covers those pages).
+        if (topCard.matches(PAGE_CHROME_CONTAINERS)) return;
 
         // Clean up any extra duplicate buttons that might exist in this card
         var existingHosts = topCard.querySelectorAll('[data-vidgrab-host]');
@@ -691,7 +693,7 @@ object YouTubeJsScripts {
         var menuContainer = menuBtn ? (menuBtn.closest('ytm-menu-renderer, .media-item-menu') || menuBtn) : null;
 
         // Priority 2: In metadata/details row
-        var metaContainer = (!menuContainer) ? topCard.querySelector('.details, .media-item-metadata, .compact-media-item-metadata, .slim-video-information-title-and-actions, .playlist-header-content') : null;
+        var metaContainer = (!menuContainer) ? topCard.querySelector('.details, .media-item-metadata, .compact-media-item-metadata, .slim-video-information-title-and-actions') : null;
 
         // Priority 3: Beside headline/title
         var titleEl = (!menuContainer && !metaContainer) ? topCard.querySelector('.media-item-headline, .compact-media-item-headline, h1, h2, h3, [class*="headline"]') : null;
@@ -718,52 +720,54 @@ object YouTubeJsScripts {
 
         var host = document.createElement('div');
         host.setAttribute('data-vidgrab-host', 'true');
-        host.style.cssText = 'position: relative; display: inline-flex; align-items: center; justify-content: center; z-index: 100; margin-left: 6px; margin-right: 4px; flex-shrink: 0; align-self: center;';
+        host.style.cssText = 'display: inline-flex; align-items: center; justify-content: center; margin-left: 2px; margin-right: 0; flex-shrink: 0; align-self: center;';
 
         var shadow = host.attachShadow({ mode: 'open' });
 
         var style = document.createElement('style');
         style.textContent = '' +
+            // Bare icon button: YouTube's own action icons have no permanent container, so a
+            // painted circle immediately reads as foreign UI. Only the press state is visible.
             '.vg-btn {' +
             '    display: inline-flex;' +
             '    align-items: center;' +
             '    justify-content: center;' +
-            '    width: 34px;' +
-            '    height: 34px;' +
+            '    width: 40px;' +
+            '    height: 40px;' +
             '    padding: 0;' +
             '    border: none;' +
             '    border-radius: 50%;' +
-            '    background: rgba(0, 0, 0, 0.08);' +
+            '    background: transparent;' +
             '    color: #0f0f0f;' +
             '    cursor: pointer;' +
             '    user-select: none;' +
             '    -webkit-tap-highlight-color: transparent;' +
-            '    transition: background-color 0.15s ease, color 0.15s ease, transform 0.12s ease;' +
+            '    transition: background-color 0.15s ease, transform 0.12s ease;' +
             '}' +
             '.vg-btn.vg-dark {' +
-            '    background: rgba(255, 255, 255, 0.14);' +
+            '    background: transparent;' +
             '    color: #f1f1f1;' +
             '}' +
             '.vg-btn:active {' +
-            '    transform: scale(0.9);' +
-            '    background: rgba(0, 0, 0, 0.16);' +
+            '    transform: scale(0.92);' +
+            '    background: rgba(0, 0, 0, 0.10);' +
             '}' +
             '.vg-btn.vg-dark:active {' +
-            '    background: rgba(255, 255, 255, 0.24);' +
+            '    background: rgba(255, 255, 255, 0.16);' +
             '}' +
             '.vg-btn svg {' +
-            '    width: 22px;' +
-            '    height: 22px;' +
+            '    width: 24px;' +
+            '    height: 24px;' +
             '    fill: currentColor;' +
             '    pointer-events: none;' +
             '}' +
             '.vg-btn.vg-compact {' +
-            '    width: 30px;' +
-            '    height: 30px;' +
+            '    width: 36px;' +
+            '    height: 36px;' +
             '}' +
             '.vg-btn.vg-compact svg {' +
-            '    width: 18px;' +
-            '    height: 18px;' +
+            '    width: 22px;' +
+            '    height: 22px;' +
             '}' +
             '.vg-spinner {' +
             '    display: none;' +
@@ -1000,8 +1004,19 @@ object YouTubeJsScripts {
     }
 
     window.__vidgrabScanNodes = function() {
-        // 1. Purge any accidental stray buttons placed inside thumbnails or avatar elements
+        // 1. Purge any accidental stray buttons placed inside thumbnails or avatar elements.
+        // Also remove chips injected by an older build into watch/playlist/channel headers, so
+        // the detail pages end up with only the native FAB after an in-session update.
         try {
+            var staleChromeButtons = document.querySelectorAll(
+                'ytm-slim-video-metadata-section-renderer [data-vidgrab-host], ' +
+                'ytm-playlist-header-renderer [data-vidgrab-host], ' +
+                'ytm-c4-tabbed-header-renderer [data-vidgrab-host], ' +
+                'yt-page-header-view-model [data-vidgrab-host]'
+            );
+            for (var c = 0; c < staleChromeButtons.length; c++) {
+                try { staleChromeButtons[c].remove(); } catch(e) {}
+            }
             var strayButtons = document.querySelectorAll(
                 '.media-item-thumbnail-container [data-vidgrab-host], ' +
                 'ytm-thumbnail-overlay-time-status-renderer [data-vidgrab-host], ' +
@@ -1093,6 +1108,7 @@ object YouTubeJsScripts {
             }).catch(function(){});
         }
         scheduleScan();
+        if (window.__vidgrabReportPageChrome) window.__vidgrabReportPageChrome();
     }
 
     window.addEventListener('yt-navigate-finish', notifyUrlChange);
@@ -1104,6 +1120,7 @@ object YouTubeJsScripts {
         checkInitialPlayerResponse();
         if (window.__vidgrabScanNodes) window.__vidgrabScanNodes();
         vgSyncButtonThemes();
+        if (window.__vidgrabReportPageChrome) window.__vidgrabReportPageChrome();
     }, 1000);
 
     // Called by native the moment the quality picker sheet is visible, so the tapped button can
@@ -1116,8 +1133,55 @@ object YouTubeJsScripts {
         window.__vidgrabActiveTriggerBtn = null;
     };
 
+    // =========================================================================
+    // SECTION 4: Page chrome reporter (native download chip placement + theme)
+    // =========================================================================
+    // The native chip lives above the WebView, so it cannot know that the watch player is filling
+    // the screen. This reports only when something changes: one rect read per scroll frame, zero
+    // bridge calls while the state is stable.
+    var vgLastPlayerVisible = null;
+    var vgLastDarkTheme = null;
+
+    function vgReportPageChrome() {
+        try {
+            var path = window.location.pathname || '';
+            var isWatch = path.indexOf('/watch') !== -1 || path.indexOf('/shorts/') !== -1;
+            var visible = false;
+            if (isWatch) {
+                var player = document.querySelector('video.html5-main-video') ||
+                    document.querySelector('#movie_player') ||
+                    document.querySelector('ytm-player') ||
+                    document.querySelector('.html5-video-player');
+                if (player) {
+                    var rect = player.getBoundingClientRect();
+                    var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+                    visible = rect.height >= 80 && rect.bottom > 0 && rect.top < vh;
+                }
+            }
+            var dark = vgIsDarkTheme();
+            if (visible === vgLastPlayerVisible && dark === vgLastDarkTheme) return;
+            vgLastPlayerVisible = visible;
+            vgLastDarkTheme = dark;
+            if (window.VidGrabBridge && window.VidGrabBridge.onPageChromeState) {
+                window.VidGrabBridge.onPageChromeState(visible, dark);
+            }
+        } catch (e) {}
+    }
+    window.__vidgrabReportPageChrome = vgReportPageChrome;
+
+    var vgChromeRafPending = false;
+    window.addEventListener('scroll', function() {
+        if (vgChromeRafPending) return;
+        vgChromeRafPending = true;
+        requestAnimationFrame(function() {
+            vgChromeRafPending = false;
+            vgReportPageChrome();
+        });
+    }, { passive: true });
+
     window.__vidgrabScanNodes();
     checkInitialPlayerResponse();
+    vgReportPageChrome();
 })();
     """.trimIndent()
 }

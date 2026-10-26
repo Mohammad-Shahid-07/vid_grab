@@ -60,57 +60,69 @@ class DownloadQueueWorker(
 
         var processedCount = 0
 
-        kotlinx.coroutines.coroutineScope {
-            while (!isStopped) {
-                // Calculate available download slots
-                val availableSlots = maxConcurrency - activeJobs.size
-                if (availableSlots > 0) {
-                    val pendingTasks = dao.getNextPendingTasks(availableSlots)
-                    if (pendingTasks.isNotEmpty()) {
-                        for (task in pendingTasks) {
-                            if (activeJobs.containsKey(task.id)) continue
-                            if (DownloadEngineExecutor.isPaused(task.id)) continue
-                            val fresh = dao.getTaskById(task.id)
-                            if (fresh?.status != TaskStatus.PENDING) continue
+        try {
+            kotlinx.coroutines.coroutineScope {
+                while (!isStopped) {
+                    // Calculate available download slots
+                    val availableSlots = maxConcurrency - activeJobs.size
+                    if (availableSlots > 0) {
+                        val pendingTasks = dao.getNextPendingTasks(availableSlots)
+                        if (pendingTasks.isNotEmpty()) {
+                            for (task in pendingTasks) {
+                                if (activeJobs.containsKey(task.id)) continue
+                                if (DownloadEngineExecutor.isPaused(task.id)) continue
+                                val fresh = dao.getTaskById(task.id)
+                                if (fresh?.status != TaskStatus.PENDING) continue
 
-                            dao.updateStatus(task.id, TaskStatus.DOWNLOADING)
+                                dao.updateStatus(task.id, TaskStatus.DOWNLOADING)
 
-                            val job = launch {
-                                try {
-                                    executeSingleTask(task)
-                                    processedCount++
-                                } catch (e: Throwable) {
-                                    val currentTask = dao.getTaskById(task.id)
-                                    val isPaused = currentTask?.status == TaskStatus.PAUSED ||
-                                            DownloadEngineExecutor.isPaused(task.id) ||
-                                            isStopped ||
-                                            e is InterruptedException ||
-                                            e is kotlinx.coroutines.CancellationException
-
-                                    if (isPaused) {
-                                        dao.updateStatus(task.id, TaskStatus.PAUSED)
-                                        Timber.i("DownloadQueueWorker: Task %s preserved as PAUSED", task.id)
-                                    } else {
-                                        dao.markFailed(task.id, e.localizedMessage ?: "Download failed")
-                                        DownloadNotificationManager.cancelProgressNotification(applicationContext, task.id)
+                                val job = launch {
+                                    try {
+                                        executeSingleTask(task)
+                                        processedCount++
+                                    } catch (e: Throwable) {
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                                            val isExplicitPause = DownloadEngineExecutor.isPaused(task.id) ||
+                                                    dao.getTaskById(task.id)?.status == TaskStatus.PAUSED
+                                            if (isExplicitPause) {
+                                                dao.updateStatus(task.id, TaskStatus.PAUSED)
+                                                Timber.i("DownloadQueueWorker: Task %s preserved as PAUSED", task.id)
+                                            } else if (isStopped || e is kotlinx.coroutines.CancellationException || e is InterruptedException) {
+                                                dao.updateStatus(task.id, TaskStatus.PENDING)
+                                                Timber.i("DownloadQueueWorker: Worker stopped or cancelled; reset task %s to PENDING", task.id)
+                                            } else {
+                                                dao.markFailed(task.id, e.localizedMessage ?: "Download failed")
+                                                DownloadNotificationManager.cancelProgressNotification(applicationContext, task.id)
+                                            }
+                                        }
+                                    } finally {
+                                        activeJobs.remove(task.id)
                                     }
-                                } finally {
-                                    activeJobs.remove(task.id)
                                 }
+                                activeJobs[task.id] = job
                             }
-                            activeJobs[task.id] = job
+                        } else if (activeJobs.isEmpty()) {
+                            Timber.i("DownloadQueueWorker: Queue is empty and no active downloads; finishing.")
+                            break
                         }
-                    } else if (activeJobs.isEmpty()) {
-                        Timber.i("DownloadQueueWorker: Queue is empty and no active downloads; finishing.")
-                        break
                     }
+
+                    delay(500L)
                 }
 
-                delay(500L)
+                if (isStopped) {
+                    activeJobs.values.forEach { it.cancel() }
+                }
             }
-
+        } finally {
             if (isStopped) {
                 activeJobs.values.forEach { it.cancel() }
+                activeJobs.clear()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    try {
+                        dao.resetInterruptedTasks()
+                    } catch (_: Exception) {}
+                }
             }
         }
 
@@ -124,7 +136,14 @@ class DownloadQueueWorker(
         }
 
         var lastNotifTimeMs = 0L
-        val thumbBmp = ThumbnailImageLoader.loadBitmap(nextTask.thumbnailUrl)
+        var lastDbWriteMs = 0L
+        var lastKnownTotalBytes = nextTask.totalBytes
+
+        // A slow thumbnail CDN must never delay the transfer itself: the notification simply
+        // starts without artwork when i.ytimg.com does not answer within 1.5 s.
+        val thumbBmp = kotlinx.coroutines.withTimeoutOrNull(1_500L) {
+            ThumbnailImageLoader.loadBitmap(nextTask.thumbnailUrl, nextTask.videoId)
+        }
 
         val downloadedFile = DownloadEngineExecutor.executeDownload(applicationContext, nextTask) { update ->
             val currentTask = dao.getTaskById(nextTask.id)
@@ -136,28 +155,34 @@ class DownloadQueueWorker(
                 throw kotlinx.coroutines.CancellationException("Task ${nextTask.id} was paused")
             }
 
-            var maxKnownTotalBytes = nextTask.totalBytes
-            val currentTotal = if (update.totalBytes > maxKnownTotalBytes) {
-                maxKnownTotalBytes = update.totalBytes
+            // Trust the latest real byte count, even when it is smaller than the pre-flight
+            // estimate. A monotonic total was the reason completed tasks kept showing the
+            // picker's bitrate guess instead of the file size.
+            val currentTotal = if (update.totalBytes > 0L) {
+                lastKnownTotalBytes = update.totalBytes
                 update.totalBytes
-            } else maxKnownTotalBytes
+            } else lastKnownTotalBytes
             val currentDownloaded = if (update.downloadedBytes > 0L) update.downloadedBytes else (currentTotal * (update.progress / 100f)).toLong()
 
-            dao.updateProgress(
-                id = nextTask.id,
-                progress = update.progress,
-                downloadedBytes = currentDownloaded,
-                totalBytes = currentTotal,
-                speed = update.speedText,
-                eta = update.etaSeconds,
-                status = update.status,
-                videoBytes = update.videoBytes,
-                audioBytes = update.audioBytes,
-                activeConnections = update.activeConnections,
-                segmentProgressCsv = update.segmentProgressCsv
-            )
-
             val now = System.currentTimeMillis()
+            val isStatusChange = update.status == TaskStatus.MERGING || update.progress >= 100f
+            if (isStatusChange || (now - lastDbWriteMs >= 500L)) {
+                lastDbWriteMs = now
+                dao.updateProgress(
+                    id = nextTask.id,
+                    progress = update.progress,
+                    downloadedBytes = currentDownloaded,
+                    totalBytes = currentTotal,
+                    speed = update.speedText,
+                    eta = update.etaSeconds,
+                    status = update.status,
+                    videoBytes = update.videoBytes,
+                    audioBytes = update.audioBytes,
+                    activeConnections = update.activeConnections,
+                    segmentProgressCsv = update.segmentProgressCsv
+                )
+            }
+
             if (now - lastNotifTimeMs >= 1000L || update.progress >= 100f || update.status == TaskStatus.MERGING) {
                 lastNotifTimeMs = now
                 val notif = DownloadNotificationManager.buildProgressNotification(
@@ -194,17 +219,19 @@ class DownloadQueueWorker(
             targetFolder = nextTask.downloadFolder
         )
 
-        val actualBytes = if (downloadedFile.exists() && downloadedFile.length() > 0L) {
-            downloadedFile.length()
-        } else {
-            nextTask.totalBytes
-        }
+        val actualBytes = exportResult.sizeBytes.takeIf { it > 0L }
+            ?: downloadedFile.length().takeIf { downloadedFile.exists() && it > 0L }
+            ?: MediaStoreExporter.sizeBytesOf(applicationContext, exportResult.contentUri)
+                .takeIf { it > 0L }
+            ?: nextTask.totalBytes
 
         // Update database to COMPLETED with real file size on disk
         dao.markCompleted(nextTask.id, exportResult.contentUri, exportResult.displayPath, actualBytes)
 
-        // Clean up app-private work dir
-        MediaStoreExporter.cleanupTaskWorkDir(applicationContext, nextTask.id)
+        // Clean up app-private work dir only if the file was copied to external storage
+        if (exportResult.displayPath != downloadedFile.absolutePath) {
+            MediaStoreExporter.cleanupTaskWorkDir(applicationContext, nextTask.id)
+        }
 
         // Post completion notification
         DownloadNotificationManager.postCompletionNotification(applicationContext, nextTask.title, nextTask.isAudioOnly)

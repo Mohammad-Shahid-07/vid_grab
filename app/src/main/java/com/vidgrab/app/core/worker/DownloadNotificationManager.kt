@@ -19,6 +19,7 @@ import com.vidgrab.app.MainActivity
 import com.vidgrab.app.R
 import com.vidgrab.app.core.database.DownloadTaskEntity
 import com.vidgrab.app.core.database.TaskStatus
+import com.vidgrab.app.core.format.formatEta
 import com.vidgrab.app.ui.theme.ThemeManager
 import java.util.Locale
 
@@ -27,9 +28,16 @@ object DownloadNotificationManager {
     const val CHANNEL_ID = "media_downloads_channel"
     const val FOREGROUND_NOTIFICATION_ID = 1001
 
+    private val notificationIdMap = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val nextNotificationId = java.util.concurrent.atomic.AtomicInteger(10000)
+
     fun getNotificationId(taskId: String): Int {
         if (taskId.isBlank()) return FOREGROUND_NOTIFICATION_ID
-        return 10000 + (taskId.hashCode() and 0x7FFF)
+        return notificationIdMap.computeIfAbsent(taskId) {
+            val id = nextNotificationId.getAndIncrement()
+            if (id > 2000000) nextNotificationId.set(10000)
+            id
+        }
     }
 
     fun createNotificationChannel(context: Context) {
@@ -95,9 +103,9 @@ object DownloadNotificationManager {
             status == TaskStatus.PAUSED -> "Paused"
             status == TaskStatus.MERGING -> "Merging audio and video..."
             status == TaskStatus.EXPANDING -> "Expanding playlist..."
-            sanitizedSpeed.isNotBlank() && etaSeconds > 0 -> "$sanitizedSpeed • ETA ${etaSeconds}s"
+            sanitizedSpeed.isNotBlank() && etaSeconds > 0 -> "$sanitizedSpeed • ETA ${formatEta(etaSeconds)}"
             sanitizedSpeed.isNotBlank() -> sanitizedSpeed
-            etaSeconds > 0 -> "ETA ${etaSeconds}s"
+            etaSeconds > 0 -> "ETA ${formatEta(etaSeconds)}"
             else -> "Downloading..."
         }
 
@@ -157,9 +165,11 @@ object DownloadNotificationManager {
                 action = if (isPaused) com.vidgrab.app.core.receiver.DownloadActionReceiver.ACTION_RESUME else com.vidgrab.app.core.receiver.DownloadActionReceiver.ACTION_PAUSE
                 putExtra(com.vidgrab.app.core.receiver.DownloadActionReceiver.EXTRA_TASK_ID, taskId)
             }
+            val pauseRequestCode = (taskId.hashCode() and 0x3FFFFFFF) * 2
+            val cancelRequestCode = pauseRequestCode + 1
             val pauseResumePending = PendingIntent.getBroadcast(
                 context,
-                101,
+                pauseRequestCode,
                 pauseResumeIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
@@ -170,7 +180,7 @@ object DownloadNotificationManager {
             }
             val cancelPending = PendingIntent.getBroadcast(
                 context,
-                102,
+                cancelRequestCode,
                 cancelIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
@@ -248,7 +258,8 @@ object DownloadNotificationManager {
     fun cancelProgressNotification(context: Context, taskId: String) {
         runCatching {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.cancel(getNotificationId(taskId))
+            val id = notificationIdMap.remove(taskId) ?: getNotificationId(taskId)
+            manager.cancel(id)
         }.onFailure { timber.log.Timber.w(it, "Could not cancel progress notification for task %s", taskId) }
     }
 

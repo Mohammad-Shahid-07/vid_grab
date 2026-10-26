@@ -352,7 +352,8 @@ object DualEngineMetadataResolver {
                             .firstOrNull()
                         val bestAudioBytes = if (bestAudio != null) {
                             val br = bestAudio.bitrate.toLong().takeIf { it > 0 } ?: 128000L
-                            (br * durationSec) / 8L
+                            streamContentLength(bestAudio.content ?: bestAudio.url)
+                                .takeIf { it > 0L } ?: ((br * durationSec) / 8L)
                         } else (128000L * durationSec) / 8L
 
                         val allVideoStreams = streamInfo.videoOnlyStreams + streamInfo.videoStreams
@@ -380,7 +381,8 @@ object DualEngineMetadataResolver {
                                     else -> 1000000L
                                 }
                                 val vBitrate = vs.bitrate.toLong().takeIf { it > 0 } ?: heuristicBr
-                                val rawVideoBytes = (vBitrate * durationSec) / 8L
+                                val rawVideoBytes = streamContentLength(vs.content ?: vs.url)
+                                    .takeIf { it > 0L } ?: ((vBitrate * durationSec) / 8L)
                                 val combinedBytes = rawVideoBytes + bestAudioBytes
 
                                 val label = when (resHeight) {
@@ -422,7 +424,9 @@ object DualEngineMetadataResolver {
                             }
                             val codecName = if (isOpus) "Opus" else "AAC"
                             val bitrateKbps = (a.bitrate / 1000).coerceAtLeast(48)
-                            val aBytes = ((a.bitrate.toLong().takeIf { it > 0 } ?: 128000L) * durationSec) / 8L
+                            val aBytes = streamContentLength(a.content ?: a.url)
+                                .takeIf { it > 0L }
+                                ?: (((a.bitrate.toLong().takeIf { it > 0 } ?: 128000L) * durationSec) / 8L)
 
                             AudioQualityOption(
                                 label = "$bitrateKbps kbps $codecName (${ext.uppercase()})",
@@ -773,5 +777,14 @@ object DualEngineMetadataResolver {
             source = source,
             resolutionTimeMs = System.currentTimeMillis() - startTime
         )
+    }
+
+    /**
+     * NewPipe does not expose a file-size field, but googlevideo URLs usually carry the exact
+     * byte count as `clen=`. Using it beats bitrate × duration estimates by a wide margin.
+     */
+    private fun streamContentLength(url: String?): Long {
+        if (url.isNullOrBlank()) return 0L
+        return Regex("""[?&]clen=(\d+)""").find(url)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
     }
 }

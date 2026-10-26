@@ -195,7 +195,7 @@ object InnerTubeFastClient {
             }
         }
 
-        return (hasDirectVideo && hasDirectAudio) || (hasDirectAudio && adaptiveFormats.length() > 0)
+        return hasDirectVideo && hasDirectAudio
     }
 
     private fun buildRequestPayload(

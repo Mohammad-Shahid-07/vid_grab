@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -65,6 +66,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -134,9 +136,22 @@ fun YouTubeBrowserScreen(
 ) {
     val context = LocalContext.current
     val theme = AppTheme.colors
+    val accent = AppTheme.accent
     val queueRepository = remember { QueueRepository.getInstance(context) }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var currentNavScreen by remember { mutableStateOf(BrowserNavScreen.BROWSER) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewInstance?.apply {
+                stopLoading()
+                loadUrl("about:blank")
+                removeJavascriptInterface("VidGrabBridge")
+                destroy()
+            }
+            webViewInstance = null
+        }
+    }
 
     val currentUrl by browserViewModel.currentUrl.collectAsState()
     val pageTitle by browserViewModel.pageTitle.collectAsState()
@@ -213,9 +228,15 @@ fun YouTubeBrowserScreen(
                 )
             },
             floatingActionButton = {
-            // Radiant Gold Persistent Native FAB (Only shown when browsing media)
+            // Large accent FAB on every media page (video, shorts, playlist, channel). It stays
+            // visible while the player is on screen: the old placement used to hide it exactly
+            // when a download is most likely.
             val currentType = browserViewModel.classifyUrl(currentUrl)
-            if (currentNavScreen == BrowserNavScreen.BROWSER && currentType != "PAGE") {
+            AnimatedVisibility(
+                visible = currentNavScreen == BrowserNavScreen.BROWSER && currentType != "PAGE",
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
                 FloatingActionButton(
                     onClick = {
                         val liveUrl = webViewInstance?.url ?: currentUrl
@@ -278,15 +299,24 @@ fun YouTubeBrowserScreen(
                         """.trimIndent()
                         webViewInstance?.evaluateJavascript(jsCode, null)
                     },
-                    containerColor = AppTheme.accent.color,
-                    contentColor = AppTheme.accent.text,
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .size(68.dp),
                     shape = CircleShape,
-                    modifier = Modifier.padding(16.dp)
+                    containerColor = accent.color,
+                    contentColor = accent.text,
+                    elevation = FloatingActionButtonDefaults.elevation(
+                        defaultElevation = 10.dp,
+                        pressedElevation = 4.dp,
+                        focusedElevation = 8.dp,
+                        hoveredElevation = 8.dp
+                    )
                 ) {
                     Icon(
                         imageVector = Icons.Default.Download,
                         contentDescription = "Download $currentType",
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(30.dp),
+                        tint = accent.text
                     )
                 }
             }
@@ -399,11 +429,25 @@ fun YouTubeBrowserScreen(
                             }
 
                             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                                val targetUrl = request?.url?.toString() ?: return false
-                                return if (targetUrl.contains("youtube.com") || targetUrl.contains("accounts.google.com") || targetUrl.contains("youtu.be")) {
+                                val targetUri = request?.url ?: return false
+                                val host = targetUri.host?.lowercase(java.util.Locale.ROOT) ?: return false
+                                val isYouTubeOrGoogle = host == "youtube.com" || host.endsWith(".youtube.com") ||
+                                        host == "youtu.be" || host.endsWith(".youtu.be") ||
+                                        host == "accounts.google.com" || host == "consent.youtube.com" ||
+                                        host == "myaccount.google.com"
+
+                                return if (isYouTubeOrGoogle) {
                                     false
                                 } else {
-                                    false
+                                    try {
+                                        val externalIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, targetUri).apply {
+                                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                        view?.context?.startActivity(externalIntent)
+                                    } catch (e: Exception) {
+                                        Timber.w(e, "Failed to launch external browser for %s", targetUri)
+                                    }
+                                    true
                                 }
                             }
                         }
@@ -465,7 +509,11 @@ fun YouTubeBrowserScreen(
     if (currentNavScreen == BrowserNavScreen.DOWNLOADS) {
         DownloadsScreen(
             queueRepository = queueRepository,
-            onNavigateBack = { currentNavScreen = BrowserNavScreen.BROWSER }
+            onNavigateBack = { currentNavScreen = BrowserNavScreen.BROWSER },
+            onOpenUrl = { url ->
+                currentNavScreen = BrowserNavScreen.BROWSER
+                webViewInstance?.loadUrl(url)
+            }
         )
     }
 

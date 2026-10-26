@@ -33,21 +33,16 @@ object YtDlpUpdater {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val lastUpdated = prefs.getLong(KEY_LAST_UPDATED, 0L)
         val cachedVer = prefs.getString(KEY_CACHED_VERSION, null)
-        val currentVer = try {
-            YoutubeDL.getInstance().version(context.applicationContext)
-        } catch (e: Exception) {
-            cachedVer
-        }
 
-        val hasValidVersion = !currentVer.isNullOrBlank()
+        val hasValidVersion = !cachedVer.isNullOrBlank()
 
         _updateState.value = YtDlpUpdateState(
-            version = currentVer ?: cachedVer,
+            version = cachedVer,
             isUpdating = false,
             lastUpdatedEpochMs = lastUpdated,
-            statusMessage = if (hasValidVersion && lastUpdated > 0L) "Up to date ($currentVer)" else "Ready (${currentVer ?: "Installed"})"
+            statusMessage = if (hasValidVersion && lastUpdated > 0L) "Up to date ($cachedVer)" else "Ready (${cachedVer ?: "Installed"})"
         )
-        Timber.i("YtDlpUpdater: Initialized with version: %s (lastUpdated=%d)", currentVer, lastUpdated)
+        Timber.i("YtDlpUpdater: Initialized with cached version: %s (lastUpdated=%d)", cachedVer, lastUpdated)
     }
 
     suspend fun ensureUpdated(context: Context, force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
@@ -56,6 +51,13 @@ object YtDlpUpdater {
             val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val lastUpdated = prefs.getLong(KEY_LAST_UPDATED, 0L)
             val now = System.currentTimeMillis()
+
+            val db = com.vidgrab.app.core.database.AppDatabase.getInstance(appContext)
+            val activeCount = db.downloadDao().getActiveDownloadingCount()
+            if (activeCount > 0 && !force) {
+                Timber.i("YtDlpUpdater: Deferring background update because %d downloads are currently in flight", activeCount)
+                return@withContext false
+            }
 
             val currentVer = try {
                 YoutubeDL.getInstance().version(appContext)

@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -358,21 +359,14 @@ fun SuccessContentView(
             val estBytes = (estBitrate * totalSelectedDurationSec) / 8L
             return formatBytes(estBytes)
         } else {
-            val option = info.videoOptions.firstOrNull { it.height == height }
-            val bitrateBps = if (option != null && option.estimatedTotalBytes > 0L && info.durationSeconds > 0) {
-                (option.estimatedTotalBytes * 8L) / info.durationSeconds
-            } else {
-                when {
-                    height >= 2160 -> 15_000_000L
-                    height >= 1440 -> 8_000_000L
-                    height >= 1080 -> 4_000_000L
-                    height >= 720 -> 2_000_000L
-                    height >= 480 -> 1_000_000L
-                    else -> 500_000L
-                }
-            }
-            val totalBytes = (bitrateBps * totalSelectedDurationSec) / 8L
-            return formatBytes(totalBytes)
+            return formatBytes(
+                estimateBatchSize(
+                    height = height,
+                    durationSeconds = totalSelectedDurationSec,
+                    videoCodec = state.batchVideoCodec,
+                    audioPreference = state.batchMergeAudioExtension
+                ).totalBytes
+            )
         }
     }
 
@@ -645,7 +639,7 @@ fun SuccessContentView(
                         Spacer(modifier = Modifier.height(8.dp))
                         val selectedSize = mergedSizeFor(selectedFormat)
                         Text(
-                            text = "Selected: ${selectedFormat.vcodec} · ${selectedFormat.container.uppercase()} · " +
+                            text = "Selected: ${selectedFormat.vcodec} · ${state.effectiveOutputContainer.uppercase()} · " +
                                 "${selectedFormat.fps}fps" +
                                 selectedSize.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
                             fontSize = 10.sp,
@@ -725,11 +719,28 @@ fun SuccessContentView(
                         }
                     }
                 } else {
-                    // Playlist mode never resolves per-item variants, so expose honest
-                    // preference chips instead of fabricated per-video codec options.
-                    Spacer(modifier = Modifier.height(12.dp))
+                    // Playlist mode cannot resolve per-item variants, so it exposes honest
+                    // preferences — but with the same rows, summary and result line as a single
+                    // video, so the flow never feels like a different product.
+                    val batchEstimate = estimateBatchSize(
+                        height = state.selectedVideoHeight,
+                        durationSeconds = totalSelectedDurationSec,
+                        videoCodec = state.batchVideoCodec,
+                        audioPreference = state.batchMergeAudioExtension
+                    )
+                    val batchAudioLabel = when (state.batchMergeAudioExtension) {
+                        "M4A" -> "AAC 128k"
+                        "Opus" -> "Opus 160k"
+                        else -> if (state.batchVideoCodec.equals("VP9", ignoreCase = true)) {
+                            "Opus 160k (auto)"
+                        } else {
+                            "AAC 128k (auto)"
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
                     SelectionChipRow(
-                        label = "Video codec preference",
+                        label = "Video format / codec",
                         options = listOf("Auto", "H.264", "VP9", "AV1").map { SelectionChip(it, it) },
                         selectedKey = state.batchVideoCodec,
                         accentColor = accent.color,
@@ -737,16 +748,37 @@ fun SuccessContentView(
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
+                    val batchSizeText = formatBytes(batchEstimate.totalBytes).takeIf { it.isNotBlank() }
+                    Text(
+                        text = "Selected: ${state.batchVideoCodec} · ${state.effectiveOutputContainer.uppercase()}" +
+                            " · ${state.selectedBatchUrls.size} videos" +
+                            (batchSizeText?.let { " · $it" } ?: ""),
+                        fontSize = 10.sp,
+                        color = theme.textMuted
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
                     SelectionChipRow(
-                        label = "Merge audio preference",
-                        options = listOf("Auto", "M4A", "Opus").map { SelectionChip(it, it) },
+                        label = "Audio track (merged) · per video",
+                        options = listOf(
+                            SelectionChip("Auto", "Auto (best)"),
+                            SelectionChip("M4A", "M4A · AAC"),
+                            SelectionChip("Opus", "Opus · 160k")
+                        ),
                         selectedKey = state.batchMergeAudioExtension,
                         accentColor = accent.color,
                         onSelected = { ext -> ext?.let(onBatchMergeAudioExtensionSelected) }
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Auto keeps AAC in MP4 and Opus in WebM. Picking the other codec saves that playlist as MKV.",
+                        text = buildString {
+                            append("Every video: ")
+                            if (batchEstimate.videoBytes > 0L) append("Video ${formatBytes(batchEstimate.videoBytes)} + ")
+                            append(batchAudioLabel)
+                            if (batchEstimate.totalBytes > 0L) append(" = ${formatBytes(batchEstimate.totalBytes)}")
+                            append(" · saved as ${state.effectiveOutputContainer.uppercase()}")
+                        },
                         fontSize = 9.5.sp,
                         color = theme.textMuted
                     )
@@ -1215,30 +1247,26 @@ fun SuccessContentView(
             } else {
                 calculateAudioSizeText(state.selectedAudioExtension, state.selectedAudioBitrateKbps)
             }
-
-            Button(
-                onClick = onStartDownload,
-                enabled = canQueue,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = accent.color,
-                    contentColor = accent.text,
-                    disabledContainerColor = theme.dividerColor,
-                    disabledContentColor = theme.textMuted
-                ),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-            ) {
-                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp), tint = accent.text)
-                val sizeSuffix = if (totalSizeText.isNotBlank()) " • $totalSizeText" else ""
-                Text(
-                    text = if (canQueue) "Download Playlist (${state.selectedBatchUrls.size} Videos$sizeSuffix)" else "Select at least 1 video",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = accent.text
-                )
+            val subtitle = if (canQueue) {
+                listOfNotNull(
+                    "${state.selectedBatchUrls.size} videos",
+                    totalSizeText.takeIf { it.isNotBlank() },
+                    state.effectiveOutputContainer.uppercase()
+                ).joinToString(" · ")
+            } else {
+                "Pick at least one video to continue"
             }
+
+            DownloadCtaButton(
+                title = if (canQueue) "Download Playlist" else "Select at least 1 video",
+                subtitle = subtitle,
+                enabled = canQueue,
+                accentColor = accent.color,
+                contentColor = accent.text,
+                disabledContainerColor = theme.dividerColor,
+                disabledContentColor = theme.textMuted,
+                onClick = onStartDownload
+            )
         } else {
             val ctaSize = if (!state.isAudioOnlyTab) {
                 mergedSizeFor(state.selectedVideoOption).takeIf { it.isNotBlank() }
@@ -1246,32 +1274,90 @@ fun SuccessContentView(
             } else {
                 calculateAudioSizeText(state.selectedAudioExtension, state.selectedAudioBitrateKbps)
             }
-            val ctaLabel = if (!state.isAudioOnlyTab) {
-                val codecStr = state.selectedVideoOption?.let { " · ${it.vcodec}" } ?: ""
-                if (ctaSize.isNotBlank()) "Download ${state.selectedVideoHeight}p$codecStr ($ctaSize)" else "Download ${state.selectedVideoHeight}p$codecStr"
+            val ctaTitle = if (!state.isAudioOnlyTab) {
+                "Download ${state.selectedVideoHeight}p · ${state.selectedVideoOption?.vcodec ?: "Video"}"
             } else {
                 val label = "${state.selectedAudioExtension.uppercase()} ${if (state.selectedAudioBitrateKbps > 0) "${state.selectedAudioBitrateKbps}k" else ""}".trim()
-                if (ctaSize.isNotBlank()) "Download $label ($ctaSize)" else "Download $label"
+                "Download $label"
             }
+            val ctaSubtitle = listOfNotNull(
+                ctaSize.takeIf { it.isNotBlank() },
+                if (!state.isAudioOnlyTab) state.effectiveOutputContainer.uppercase() else null
+            ).joinToString(" · ")
 
-            Button(
-                onClick = onStartDownload,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = accent.color,
-                    contentColor = accent.text
-                ),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-            ) {
-                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp), tint = accent.text)
-                Spacer(modifier = Modifier.width(8.dp))
+            DownloadCtaButton(
+                title = ctaTitle,
+                subtitle = ctaSubtitle,
+                enabled = true,
+                accentColor = accent.color,
+                contentColor = accent.text,
+                disabledContainerColor = theme.dividerColor,
+                disabledContentColor = theme.textMuted,
+                onClick = onStartDownload
+            )
+        }
+    }
+}
+
+/**
+ * Two-line primary action. A single line of `Download Playlist (100 Videos • 17.60 GB)` cannot fit
+ * a 48dp button on a 360dp screen and used to wrap mid-label, so the label is split into a title
+ * and a muted subtitle that both ellipsize instead of reflowing.
+ */
+@Composable
+private fun DownloadCtaButton(
+    title: String,
+    subtitle: String,
+    enabled: Boolean,
+    accentColor: Color,
+    contentColor: Color,
+    disabledContainerColor: Color,
+    disabledContentColor: Color,
+    onClick: () -> Unit
+) {
+    val titleColor = if (enabled) contentColor else disabledContentColor
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = accentColor,
+            contentColor = contentColor,
+            disabledContainerColor = disabledContainerColor,
+            disabledContentColor = disabledContentColor
+        ),
+        shape = RoundedCornerShape(14.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Default.Download,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = titleColor
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = title,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Bold,
+                color = titleColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (subtitle.isNotBlank()) {
                 Text(
-                    text = ctaLabel,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = accent.text
+                    text = subtitle,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = titleColor.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
