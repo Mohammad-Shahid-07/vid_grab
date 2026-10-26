@@ -6,7 +6,7 @@
 
 **A private, ad-free YouTube browser and multi-engine downloader for Android.**
 
-<a href="https://github.com/Mohammad-Shahid-07/vid_grab/releases/tag/v0.01">
+<a href="https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-universal.apk">
   <img src="https://img.shields.io/badge/Download_APK-v0.01-ff2d55?style=for-the-badge&logo=android&logoColor=white" alt="Download YouDrop v0.01" />
 </a>
 <img src="https://img.shields.io/badge/Android-10%2B-3ddc84?style=for-the-badge&logo=android&logoColor=white" alt="Android 10 or newer" />
@@ -68,19 +68,28 @@ The browser is part of the app, not a bolted-on WebView. Download buttons appear
 
 ### Direct APK (recommended)
 
-1. Open the [**v0.01 release**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/tag/v0.01).
-2. Download the APK that matches your device, or grab the universal build if you are unsure.
-3. Open the downloaded file and allow **Install unknown apps** for your browser or file manager when prompted.
-4. Launch **YouDrop** and grant the notification permission so progress stays visible.
+1. [**Download YouDrop v0.01**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-universal.apk) — the universal build, about 215 MB. It works on every supported phone, tablet and emulator.
+2. Open the downloaded file and allow **Install unknown apps** for your browser or file manager when prompted.
+3. Launch **YouDrop** and grant the notification permission so progress stays visible.
 
-| Device | Recommended APK | Approx. size |
+<details>
+<summary><strong>Smaller builds for specific devices</strong></summary>
+
+<br />
+
+If you know your device's CPU architecture and want a smaller download:
+
+| Device | APK | Approx. size |
 | :--- | :--- | ---: |
-| Most Android phones from the last several years | [**arm64-v8a**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-arm64-v8a.apk) | 62 MB |
+| Most phones from 2017 onward | [**arm64-v8a**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-arm64-v8a.apk) | 62 MB |
 | Older 32-bit ARM phones | [**armeabi-v7a**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-armeabi-v7a.apk) | 55 MB |
 | Emulators, x86 Chromebooks and some tablets | [**x86_64**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-x86_64.apk) | 64 MB |
-| One build for every supported device | [**universal**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-universal.apk) | 215 MB |
 
-All builds are signed with the same release key. SHA-256 checksums are published as [`SHA256SUMS.txt`](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/SHA256SUMS.txt).
+All builds contain the same app and are signed with the same release key. When in doubt, use the universal build.
+
+</details>
+
+SHA-256 checksums are published as [`SHA256SUMS.txt`](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/SHA256SUMS.txt).
 
 > Android 10 (API 29) or newer is required. The APK is large because it bundles Python, yt-dlp, FFmpeg, aria2c and QuickJS for on-device extraction and merging.
 

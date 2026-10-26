@@ -40,17 +40,25 @@
 
 ## Install
 
-1. Download the APK for your device below.
+1. [**Download the universal APK**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-universal.apk) (215 MB). One file that works on every supported device.
 2. Open the file and allow **Install unknown apps** when prompted.
 3. Launch YouDrop and allow notifications for download progress.
 4. Optional: exempt YouDrop from battery optimization for long background downloads.
 
+<details>
+<summary><strong>Smaller builds for specific devices</strong></summary>
+
+<br />
+
 | Build | Device | Size |
 | :--- | :--- | ---: |
-| `YouDrop-v0.01-arm64-v8a.apk` | Most modern Android phones | 62 MB |
+| `YouDrop-v0.01-arm64-v8a.apk` | Most phones from 2017 onward | 62 MB |
 | `YouDrop-v0.01-armeabi-v7a.apk` | Older 32-bit ARM phones | 55 MB |
 | `YouDrop-v0.01-x86_64.apk` | Emulators and x86 Chromebooks | 64 MB |
-| `YouDrop-v0.01-universal.apk` | Works on every supported ABI | 215 MB |
+
+All builds contain the same app and are signed with the same key. When in doubt, use the universal build.
+
+</details>
 
 Verify downloads with `SHA256SUMS.txt`:
 
