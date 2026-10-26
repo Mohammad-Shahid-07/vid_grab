@@ -1,4 +1,4 @@
-# VidGrab Proguard / R8 Optimization Rules
+# YouDrop Proguard / R8 Optimization Rules
 
 # youtubedl-android & JNI bindings
 -keep class com.yausername.youtubedl_android.** { *; }
@@ -14,10 +14,23 @@
 -keep interface org.schabi.newpipe.extractor.** { *; }
 -dontwarn org.schabi.newpipe.extractor.**
 
+# Rhino JavaScript runtime (used by NewPipeExtractor to evaluate YouTube JS)
+# The jar also ships desktop debugger/shell tools; Android has no AWT or Swing.
+-keep class org.mozilla.javascript.** { *; }
+-dontwarn java.beans.**
+-dontwarn java.awt.**
+-dontwarn javax.swing.**
+
 # OkHttp & Okio
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -keepnames class okhttp3.internal.publicsuffix.PublicSuffixDatabase
+
+# WebView JavaScript bridge (called by name from injected page scripts)
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keep class com.vidgrab.app.core.webview.YouTubeJsBridge { *; }
 
 # Kotlin Coroutines
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}

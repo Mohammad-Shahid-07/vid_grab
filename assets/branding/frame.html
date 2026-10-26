@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>YouDrop screenshot frame</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    width: 820px;
+    height: 1700px;
+    background: transparent;
+    overflow: hidden;
+  }
+  .stage {
+    width: 820px;
+    height: 1700px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+  }
+  .phone {
+    position: relative;
+    width: 752px;
+    height: 1632px;
+    padding: 16px;
+    border-radius: 64px;
+    background: linear-gradient(155deg, #34343e 0%, #141419 26%, #08080b 100%);
+    box-shadow:
+      0 34px 80px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(255, 255, 255, 0.12),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  }
+  .phone img {
+    width: 720px;
+    height: 1600px;
+    object-fit: cover;
+    border-radius: 48px;
+    display: block;
+  }
+  .phone::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 26px;
+    width: 104px;
+    height: 26px;
+    border-radius: 999px;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.82);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="phone">
+      <img id="shot" src="../screenshots/current.png" alt="YouDrop screenshot">
+    </div>
+  </div>
+  <script>
+    const file = new URLSearchParams(location.search).get('img');
+    if (file) document.getElementById('shot').src = '../screenshots/' + file;
+  </script>
+</body>
+</html>

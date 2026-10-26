@@ -50,6 +50,18 @@ object DownloadEngineExecutor {
     /** Upper bound for the pre-flight player fetch; every engine can extract on its own after it. */
     private const val PREFLIGHT_RESOLVE_TIMEOUT_MS = 6_000L
 
+    /**
+     * The engine that last owned [task].id's sandbox. Pausing during a merge used to lose this
+     * information, so resume started again from the primary native engine and re-downloaded bytes
+     * the previous engine had already fetched. The marker is a tiny file inside the task workDir,
+     * which already survives pause/resume and process death.
+     */
+    private const val RESUME_MARKER_FILE = ".vidgrab-active-engine"
+    private const val RESUME_ENGINE_FAST = "fast"
+    private const val RESUME_ENGINE_JVM = "jvm"
+    private const val RESUME_ENGINE_YTDLP_FAST = "ytdlp1"
+    private const val RESUME_ENGINE_YTDLP_AUTH = "ytdlp2"
+
     private val activeTasks = ConcurrentHashMap<String, Boolean>()
     private val pausedTasks = ConcurrentHashMap.newKeySet<String>()
 
@@ -113,9 +125,15 @@ object DownloadEngineExecutor {
             val isAudioValid = !isAudioNeeded || FastDirectDownloader.isStreamUrlValid(directAudio)
             val needsReResolution = isYouTube && nativeAudioCompatible && (!isVideoValid || !isAudioValid)
 
+            // Read the resume marker before the pre-flight: a yt-dlp resume never uses native
+            // stream URLs, so it should not pay for a player fetch it will not consume.
+            val resumeEngine = readActiveEngine(workDir) ?: inferResumeEngine(workDir)
+            val resumeWithYtDlp = resumeEngine == RESUME_ENGINE_YTDLP_FAST ||
+                resumeEngine == RESUME_ENGINE_YTDLP_AUTH
+
             // If direct URLs are missing or expired, re-resolve while honoring the user's
             // video codec and exact audio-track choices.
-            if (needsReResolution) {
+            if (needsReResolution && !resumeWithYtDlp) {
                 val vid = DualEngineMetadataResolver.extractVideoId(cleanUrl)
                 if (vid != null) {
                     // Pre-flight resolution must never hold the transfer hostage: both native engines
@@ -167,7 +185,12 @@ object DownloadEngineExecutor {
 
             val engineMode = DownloadEnginePreferences.getMode(context)
             val fastFirst = engineMode == DownloadEngineMode.FAST
-            Timber.i("DownloadEngine: Primary engine = %s for task %s", engineMode.name, task.id)
+            Timber.i(
+                "DownloadEngine: Primary engine = %s, resume marker = %s for task %s",
+                engineMode.name,
+                resumeEngine ?: "none",
+                task.id
+            )
 
             // Fast parallel segmented engine.
             var firstByteLogged = false
@@ -183,6 +206,7 @@ object DownloadEngineExecutor {
                     val directOutputFile = File(workDir, "$sanitizedTitle.${task.outputExt}")
                     try {
                         Timber.i("DownloadEngine [Direct/Fast]: Attempting FastDirectDownloader for task %s", task.id)
+                        markActiveEngine(workDir, RESUME_ENGINE_FAST)
                         val fastResult = FastDirectDownloader.downloadFast(
                             taskId = task.id,
                             videoUrl = if (task.isAudioOnly) null else directVideo,
@@ -238,6 +262,7 @@ object DownloadEngineExecutor {
                 } else {
                     try {
                         Timber.i("DownloadEngine [Direct/JVM]: Attempting DirectJvmStreamDownloader for task %s", task.id)
+                        markActiveEngine(workDir, RESUME_ENGINE_JVM)
                         val produced = DirectJvmStreamDownloader.download(
                             context = context,
                             task = task,
@@ -271,45 +296,56 @@ object DownloadEngineExecutor {
                 }
             }
 
-            val primaryAttempt = if (fastFirst) attemptFastDirect else attemptDirectJvm
-            val secondaryAttempt = if (fastFirst) attemptDirectJvm else attemptFastDirect
-
-            val primaryStarted = System.currentTimeMillis()
-            val primaryResult = primaryAttempt()
-            if (primaryResult != null) {
-                Timber.i(
-                    "DownloadEngine: primary engine produced %s in %d ms",
-                    primaryResult.name,
-                    System.currentTimeMillis() - primaryStarted
+            val nativeAttempts: List<Pair<String, suspend () -> File?>> = when {
+                // The task was mid-transfer inside yt-dlp. Native engines cannot reuse yt-dlp's
+                // per-format files, so running one now would restart the transfer from zero and
+                // can even overwrite the streams that are waiting to be merged.
+                resumeWithYtDlp -> {
+                    Timber.i(
+                        "DownloadEngine: resuming yt-dlp (%s) for task %s; skipping native engines",
+                        resumeEngine,
+                        task.id
+                    )
+                    emptyList()
+                }
+                resumeEngine == RESUME_ENGINE_FAST -> listOf(
+                    RESUME_ENGINE_FAST to attemptFastDirect,
+                    RESUME_ENGINE_JVM to attemptDirectJvm
                 )
-                return@withContext primaryResult
-            }
-            Timber.w(
-                "DownloadEngine: primary engine gave up after %d ms",
-                System.currentTimeMillis() - primaryStarted
-            )
-
-            if (isPaused(task.id) || activeTasks[task.id] != true) {
-                throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
-            }
-
-            val secondaryStarted = System.currentTimeMillis()
-            val secondaryResult = secondaryAttempt()
-            if (secondaryResult != null) {
-                Timber.i(
-                    "DownloadEngine: secondary engine produced %s in %d ms",
-                    secondaryResult.name,
-                    System.currentTimeMillis() - secondaryStarted
+                resumeEngine == RESUME_ENGINE_JVM -> listOf(
+                    RESUME_ENGINE_JVM to attemptDirectJvm,
+                    RESUME_ENGINE_FAST to attemptFastDirect
                 )
-                return@withContext secondaryResult
+                fastFirst -> listOf(
+                    RESUME_ENGINE_FAST to attemptFastDirect,
+                    RESUME_ENGINE_JVM to attemptDirectJvm
+                )
+                else -> listOf(
+                    RESUME_ENGINE_JVM to attemptDirectJvm,
+                    RESUME_ENGINE_FAST to attemptFastDirect
+                )
             }
-            Timber.w(
-                "DownloadEngine: secondary engine gave up after %d ms",
-                System.currentTimeMillis() - secondaryStarted
-            )
 
-            if (isPaused(task.id) || activeTasks[task.id] != true) {
-                throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
+            for ((engineName, attempt) in nativeAttempts) {
+                if (isPaused(task.id) || activeTasks[task.id] != true) {
+                    throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
+                }
+                val started = System.currentTimeMillis()
+                val result = attempt()
+                if (result != null) {
+                    Timber.i(
+                        "DownloadEngine: %s engine produced %s in %d ms",
+                        engineName,
+                        result.name,
+                        System.currentTimeMillis() - started
+                    )
+                    return@withContext result
+                }
+                Timber.w(
+                    "DownloadEngine: %s engine gave up after %d ms",
+                    engineName,
+                    System.currentTimeMillis() - started
+                )
             }
 
             // Neither native path produced a complete file. Remove partial legacy artifacts
@@ -321,26 +357,36 @@ object DownloadEngineExecutor {
             // STAGE 1: Fast Public Mobile Client Path (starts in 2–4s fallback)
             // Uses ios,tv with player_skip=webpage,configs + QuickJS immediately
             // =================================================================
-            try {
-                Timber.i("DownloadEngine [Stage 1]: Fast Mobile Client yt-dlp (ios,tv) for task %s", task.id)
-                return@withContext runDownloadSession(
-                    context = context,
-                    workDir = workDir,
-                    task = task,
-                    concurrency = 8,
-                    useCookies = false,
-                    userAgent = null,
-                    extractorArgs = if (isYouTube) "youtube:player_client=ios,tv;player_skip=webpage,configs" else null,
-                    formatSelector = task.formatSelector,
-                    qjsPath = if (hasQjs) qjsFile.absolutePath else null,
-                    onProgress = onProgress
-                )
-            } catch (e: Exception) {
-                if (isPaused(task.id) || activeTasks[task.id] != true || e is InterruptedException || e is kotlinx.coroutines.CancellationException) {
-                    Timber.i("DownloadEngine: Task %s was paused or cancelled during Stage 1. Halting.", task.id)
-                    throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
+            // A task paused inside Stage 2 must not re-run Stage 1: its partial format files
+            // belong to Stage 2's selector, and Stage 1 would download a different set first.
+            if (resumeEngine != RESUME_ENGINE_YTDLP_AUTH) {
+                try {
+                    Timber.i("DownloadEngine [Stage 1]: Fast Mobile Client yt-dlp (ios,tv) for task %s", task.id)
+                    markActiveEngine(workDir, RESUME_ENGINE_YTDLP_FAST)
+                    return@withContext runDownloadSession(
+                        context = context,
+                        workDir = workDir,
+                        task = task,
+                        concurrency = 8,
+                        useCookies = false,
+                        userAgent = null,
+                        extractorArgs = if (isYouTube) "youtube:player_client=ios,tv;player_skip=webpage,configs" else null,
+                        formatSelector = task.formatSelector,
+                        qjsPath = if (hasQjs) qjsFile.absolutePath else null,
+                        onProgress = onProgress
+                    )
+                } catch (e: Exception) {
+                    if (isPaused(task.id) || activeTasks[task.id] != true || e is InterruptedException || e is kotlinx.coroutines.CancellationException) {
+                        Timber.i("DownloadEngine: Task %s was paused or cancelled during Stage 1. Halting.", task.id)
+                        throw kotlinx.coroutines.CancellationException("Task ${task.id} was paused or cancelled")
+                    }
+                    Timber.w(e, "DownloadEngine [Stage 1] failed for task %s. Activating Stage 2 (Authenticated Fallback)...", task.id)
                 }
-                Timber.w(e, "DownloadEngine [Stage 1] failed for task %s. Activating Stage 2 (Authenticated Fallback)...", task.id)
+            } else {
+                Timber.i(
+                    "DownloadEngine: task %s was paused in Stage 2; resuming consolidated fallback",
+                    task.id
+                )
             }
 
             if (isPaused(task.id) || activeTasks[task.id] != true) {
@@ -368,6 +414,7 @@ object DownloadEngineExecutor {
             }
 
             Timber.i("DownloadEngine [Stage 2]: Authenticated fallback (tv,mweb,web) for task %s", task.id)
+            markActiveEngine(workDir, RESUME_ENGINE_YTDLP_AUTH)
             return@withContext runDownloadSession(
                 context = context,
                 workDir = workDir,
@@ -391,7 +438,9 @@ object DownloadEngineExecutor {
             throw RuntimeException(meaningfulError, e)
         } finally {
             activeTasks.remove(task.id)
-            pausedTasks.remove(task.id)
+            // Do NOT clear pausedTasks here: the worker's cancellation handler reads it to keep the
+            // row PAUSED. Removing it before that check reset paused tasks to PENDING, which made
+            // the queue immediately restart them (most visibly while merging).
         }
     }
 
@@ -825,6 +874,61 @@ object DownloadEngineExecutor {
         } catch (e: Exception) {
             Timber.w(e, "Could not clean sandbox files in %s", workDir.absolutePath)
         }
+    }
+
+    private val resumeEngineNames = setOf(
+        RESUME_ENGINE_FAST,
+        RESUME_ENGINE_JVM,
+        RESUME_ENGINE_YTDLP_FAST,
+        RESUME_ENGINE_YTDLP_AUTH
+    )
+
+    /** yt-dlp names per-format streams `<title>.f<format_id>.<ext>[.part|.ytdl]`. */
+    private val ytDlpFormatFile = Regex("""\.f[0-9a-z][0-9a-z_-]*\.[0-9a-z]+""")
+
+    private fun markActiveEngine(workDir: File, engine: String) {
+        try {
+            workDir.mkdirs()
+            val marker = File(workDir, RESUME_MARKER_FILE)
+            if (!marker.exists() || marker.readText().trim() != engine) {
+                marker.writeText(engine)
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Could not persist active engine %s in %s", engine, workDir.absolutePath)
+        }
+    }
+
+    private fun readActiveEngine(workDir: File): String? {
+        return try {
+            val marker = File(workDir, RESUME_MARKER_FILE)
+            if (!marker.isFile) return null
+            marker.readText().trim().lowercase().takeIf { it in resumeEngineNames }
+        } catch (e: Exception) {
+            Timber.w(e, "Could not read active engine in %s", workDir.absolutePath)
+            null
+        }
+    }
+
+    /**
+     * Best-effort reconstruction for tasks paused before the marker existed. yt-dlp wins over
+     * native temp files because failed native attempts can leave stale artifacts behind while the
+     * live transfer was already running inside yt-dlp.
+     */
+    private fun inferResumeEngine(workDir: File): String? {
+        val names = workDir.listFiles()?.filter { it.isFile }?.map { it.name.lowercase() } ?: return null
+        if (names.any { ytDlpFormatFile.containsMatchIn(it) }) {
+            Timber.i("DownloadEngine: inferred yt-dlp resume for %s (format files present)", workDir.name)
+            return RESUME_ENGINE_YTDLP_FAST
+        }
+        if (names.any { it.endsWith(".vgstate") || it.contains("_temp_v.") || it.contains("_temp_a.") }) {
+            Timber.i("DownloadEngine: inferred FastDirect resume for %s (segment state present)", workDir.name)
+            return RESUME_ENGINE_FAST
+        }
+        if (names.any { it.startsWith("temp_video.") || it.startsWith("temp_audio.") || it.startsWith("output.") }) {
+            Timber.i("DownloadEngine: inferred DirectJvm resume for %s (temp streams present)", workDir.name)
+            return RESUME_ENGINE_JVM
+        }
+        return null
     }
 
     fun pauseTask(taskId: String): Boolean {

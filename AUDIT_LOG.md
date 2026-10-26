@@ -2464,3 +2464,107 @@ The flap is the **engine fallback chain**, not a single slow request. `DownloadE
 - [x] Injected chips no longer set a stacking context above the sticky player.
 - [x] Completed sizes come from the final file/URI and old rows are corrected.
 - [x] All changes remain uncommitted.
+
+## Audit Entry - October 26, 2026: Resume After Pausing During Merge
+
+- **Date/Time**: 2026-10-26T20:12:03+05:30
+- **Scope**: `core/engine/DownloadEngineExecutor.kt`, task pause/resume lifecycle, `worker/DownloadQueueWorker.kt` interaction.
+
+### 1. Root Cause
+
+Pausing while a task displayed `MERGING` and then resuming re-ran the queue from the start of the transfer:
+
+1. `executeDownload` always retried the globally preferred native engine first. If the task had actually been downloading/merging inside **yt-dlp**, that native engine could not reuse yt-dlp's per-format files and started the transfer from 0%.
+2. `executeDownload`'s `finally` removed the task from `pausedTasks`. The worker's cancellation handler checks `DownloadEngineExecutor.isPaused(...)` (plus the DB row) to decide whether to keep a task `PAUSED`; removing the flag before that check let the row fall back to `PENDING`, so the queue immediately restarted it.
+3. Nothing recorded whether a resumed task had been in yt-dlp Stage 1 (public client) or Stage 2 (authenticated fallback), so a Stage 2 resume could first re-run Stage 1 with a different selector.
+
+### 2. Fixes Applied
+
+- Added a per-task `.vidgrab-active-engine` marker in the task work dir (`fast`, `jvm`, `ytdlp1`, `ytdlp2`).
+  - Marker is written immediately before each engine/session starts.
+  - On resume, that engine is attempted first regardless of the global engine preference; the other native engine remains the second fallback.
+  - If the marker is `ytdlp1`/`ytdlp2`, native engines are skipped entirely so they cannot overwrite or restart yt-dlp's streams.
+- yt-dlp stages now persist `ytdlp1` before Stage 1 and `ytdlp2` before Stage 2.
+  - A `ytdlp2` resume goes straight to the authenticated fallback, keeping the same format selector and `--continue` partial files.
+- Added inference for tasks paused before markers existed:
+  - yt-dlp per-format files (`<title>.f<id>.<ext>[.part]`) win â†’ resume yt-dlp.
+  - FastDirect `_temp_v`/`_temp_a`/`.vgstate` â†’ resume `fast`.
+  - DirectJvm `temp_video.*`/`temp_audio.*`/`output.*` â†’ resume `jvm`.
+- `executeDownload` no longer clears `pausedTasks` in `finally`; `resumeTask()`, `resumeAllTasks()` and `cancelTask()` own that lifecycle. This keeps the worker from converting an explicit pause into `PENDING`.
+- Existing resume paths are unchanged: FastDirect segment maps and DirectJvm completed temp streams are reused; yt-dlp `--continue` reuses `.part`/stream files; a pause during yt-dlp merging now re-merges instead of re-downloading.
+
+### 3. Verification
+
+- **Command Executed**: `.\gradlew.bat :app:assembleDebug --console=plain`.
+- **Build Result**: `BUILD SUCCESSFUL` (only pre-existing deprecation warnings).
+- **Static Review**: `git diff --check` clean; engine ordering, marker writes and pause propagation reviewed.
+- **Device**: not connected at verification time (`adb devices` empty), so the on-device pause/resume-during-merge pass is pending.
+
+### 4. Supervisor Review Checklist
+
+- [x] A task paused in yt-dlp resumes yt-dlp instead of restarting a native transfer.
+- [x] A task paused in yt-dlp Stage 2 does not re-run Stage 1.
+- [x] Existing paused tasks without a marker are inferred from their sandbox files.
+- [x] FastDirect and DirectJvm keep their own resume ordering.
+- [x] An explicit pause can no longer be converted to `PENDING` by the engine's `finally` block.
+- [x] Build is green and all changes remain uncommitted.
+
+---
+
+## Audit Entry - October 26, 2026: YouDrop v0.01 Public Release Packaging
+- **Date/Time**: 2026-10-26T20:45:00+05:30
+- **Scope**: README/branding assets, GPL compliance files, release signing, R8 keep rules, APK packaging.
+
+### 1. Release Decisions
+
+- Public product name remains **YouDrop** even though the repository and Android package stay `vid_grab` / `com.vidgrab.app`.
+- Version fixed at `versionCode = 1` and `versionName = "0.01"`; GitHub tag `v0.01`.
+- Release branding uses a real 720x1600 on-device screenshot of the YouDrop browser, not the unrelated StreamFlow web prototype.
+- Project licensed **GPL-3.0** because NewPipeExtractor and youtubedl-android are GPL-3.0. Third-party attributions documented separately.
+- Release APKs are split by ABI and also published as a universal build, with SHA-256 checksums.
+
+### 2. Signing & Build Configuration
+
+- Added optional `keystore.properties` loading in `app/build.gradle.kts`.
+- When the properties file exists, the release build uses the dedicated YouDrop RSA-4096 key; otherwise it falls back to the debug key for local builds.
+- The keystore and passwords live outside the repository; `keystore.properties` is git-ignored.
+- Added R8 keep rules for the WebView `@JavascriptInterface` bridge, Rhino, and missing desktop-only `java.awt` / `javax.swing` references.
+- Release build uses R8 minification and resource shrinking.
+
+### 3. Artifacts
+
+- `app-arm64-v8a-release.apk` - 64,577,037 bytes
+- `app-armeabi-v7a-release.apk` - 57,408,295 bytes
+- `app-x86_64-release.apk` - 67,584,118 bytes
+- `app-universal-release.apk` - 225,038,504 bytes
+
+All four are signed with certificate SHA-256 `21249cb9dc2c2c12f86771ce4aef597b0377d525621b973c18770eb3c61ba25f`.
+
+### 4. Documentation
+
+- `README.md` â€” premium landing page, real screenshot/banner, features, install matrix, build guide, privacy and legal notes.
+- `RELEASE_NOTES_v0.01.md` â€” release highlights and pause/resume fix notes.
+- `LICENSE` â€” GNU GPL v3.0 full text.
+- `THIRD_PARTY_NOTICES.md` â€” extraction/media/Android dependency attribution.
+- `RELEASING.md` â€” maintainer signing and publish checklist.
+- `keystore.properties.example` â€” safe signing template.
+- `assets/branding/` â€” rendered banner and reproducible HTML sources.
+- `assets/screenshots/` â€” real device captures (raw + framed).
+
+### 5. Verification
+
+- **Command Executed**: `.\gradlew.bat :app:assembleRelease --console=plain`.
+- **Build Result**: `BUILD SUCCESSFUL`.
+- **APK metadata**: package `com.vidgrab.app`, versionCode 1, versionName 0.01, label `YouDrop`, minSdk 29, targetSdk 35.
+- **Signature**: verified with `apksigner` on all four APKs.
+- **Device smoke test**: pending device reconnection; must verify browser injection, metadata resolution and a short pause/resume download before publishing.
+
+### 6. Supervisor Review Checklist
+
+- [x] App name is YouDrop in manifest label, UI header, notifications and download folder.
+- [x] Pause-during-merge fix is included in the release build.
+- [x] Release APKs are not debug-signed.
+- [x] GPL-3.0 license and third-party notices are present.
+- [x] README download links and APK names match the planned release assets.
+- [ ] Physical-device smoke test of the minified release build.
+- [ ] GitHub release assets and checksums published.

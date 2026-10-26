@@ -385,7 +385,7 @@ fun SettingsScreen(
             SettingsCard(title = "Download Engine", icon = Icons.Default.Bolt) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "One choice for every download. VidGrab never asks you to pick an engine per video.",
+                        text = "One choice for every download. YouDrop never asks you to pick an engine per video.",
                         fontSize = 12.sp,
                         color = currentTheme.textSecondary
                     )
