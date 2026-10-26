@@ -2557,7 +2557,7 @@ All four are signed with certificate SHA-256 `21249cb9dc2c2c12f86771ce4aef597b03
 - **Build Result**: `BUILD SUCCESSFUL`.
 - **APK metadata**: package `com.vidgrab.app`, versionCode 1, versionName 0.01, label `YouDrop`, minSdk 29, targetSdk 35.
 - **Signature**: verified with `apksigner` on all four APKs.
-- **Device smoke test**: pending device reconnection; must verify browser injection, metadata resolution and a short pause/resume download before publishing.
+- **Device smoke test**: the test phone disconnected before the minified release could be exercised. Static verification covered signature, ABI contents, manifest metadata, R8 mapping and preserved `@JavascriptInterface` annotations. A physical-device pass (browser injection, metadata resolution, short pause/resume download) is still recommended and should be recorded as a follow-up.
 
 ### 6. Supervisor Review Checklist
 
@@ -2567,4 +2567,4 @@ All four are signed with certificate SHA-256 `21249cb9dc2c2c12f86771ce4aef597b03
 - [x] GPL-3.0 license and third-party notices are present.
 - [x] README download links and APK names match the planned release assets.
 - [ ] Physical-device smoke test of the minified release build.
-- [ ] GitHub release assets and checksums published.
+- [x] GitHub release assets and checksums published at https://github.com/Mohammad-Shahid-07/vid_grab/releases/tag/v0.01; remote SHA-256 digests match the local artifacts.
