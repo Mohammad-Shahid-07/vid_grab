@@ -21,7 +21,7 @@
 
 YouDrop pairs a focused YouTube browser with a serious download queue. Browse in a clean dark interface, block ads and trackers, keep audio playing in the background, then save any video or playlist in the quality you actually want.
 
-No account. No ad SDK. No analytics. No per-video quiz about which download engine to use.
+No sign-up. No ad SDK. No analytics. No per-video quiz about which download engine to use.
 
 > **Repository note:** the GitHub repository is still named `vid_grab` for continuity. The app is **YouDrop**.
 
