@@ -6,7 +6,7 @@
 
 **A private, ad-free YouTube browser and multi-engine downloader for Android.**
 
-<a href="https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-universal.apk">
+<a href="https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/YouDrop-v0.01-universal.apk">
   <img src="https://img.shields.io/badge/Download_APK-v0.01-ff2d55?style=for-the-badge&logo=android&logoColor=white" alt="Download YouDrop v0.01" />
 </a>
 <img src="https://img.shields.io/badge/Android-10%2B-3ddc84?style=for-the-badge&logo=android&logoColor=white" alt="Android 10 or newer" />
@@ -23,18 +23,26 @@ YouDrop pairs a focused YouTube browser with a serious download queue. Browse in
 
 No sign-up. No ad SDK. No analytics.
 
-> **Repository note:** the GitHub repository is still named `vid_grab` for continuity. The app is **YouDrop**.
-
 ---
 
 ## A look inside
 
 <p align="center">
-  <img src="assets/screenshots/home.png" width="340" alt="YouDrop browser showing YouTube home, download actions, Shorts and bottom navigation" />
+  <img src="assets/screenshots/browser_home.png" width="300" alt="YouDrop browser showing the YouTube home feed with download actions beside each video" />
+  <img src="assets/screenshots/quality_picker.png" width="300" alt="YouDrop quality picker with video and audio options, codec selection and download folder" />
 </p>
 
 <p align="center">
-  <sub>The built-in YouTube browser, with download actions injected exactly where you need them.</sub>
+  <sub>The built-in YouTube browser and the quality picker, with everything chosen before a byte is downloaded.</sub>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/downloads.png" width="300" alt="YouDrop download queue with paused tasks and progress" />
+  <img src="assets/screenshots/settings.jpg" width="300" alt="YouDrop settings with themes, accent tones and download engine choice" />
+</p>
+
+<p align="center">
+  <sub>A resumable queue and a settings screen that stays out of the way.</sub>
 </p>
 
 ---
@@ -68,7 +76,7 @@ The browser is part of the app, not a bolted-on WebView. Download buttons appear
 
 ### Direct APK (recommended)
 
-1. [**Download YouDrop v0.01**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-universal.apk) — the universal build, about 215 MB. It works on every supported phone, tablet and emulator.
+1. [**Download YouDrop v0.01**](https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/YouDrop-v0.01-universal.apk) — the universal build, about 215 MB. It works on every supported phone, tablet and emulator.
 2. Open the downloaded file and allow **Install unknown apps** for your browser or file manager when prompted.
 3. Launch **YouDrop** and grant the notification permission so progress stays visible.
 
@@ -81,15 +89,15 @@ If you know your device's CPU architecture and want a smaller download:
 
 | Device | APK | Approx. size |
 | :--- | :--- | ---: |
-| Most phones from 2017 onward | [**arm64-v8a**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-arm64-v8a.apk) | 62 MB |
-| Older 32-bit ARM phones | [**armeabi-v7a**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-armeabi-v7a.apk) | 55 MB |
-| Emulators, x86 Chromebooks and some tablets | [**x86_64**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-x86_64.apk) | 64 MB |
+| Most phones from 2017 onward | [**arm64-v8a**](https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/YouDrop-v0.01-arm64-v8a.apk) | 62 MB |
+| Older 32-bit ARM phones | [**armeabi-v7a**](https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/YouDrop-v0.01-armeabi-v7a.apk) | 55 MB |
+| Emulators, x86 Chromebooks and some tablets | [**x86_64**](https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/YouDrop-v0.01-x86_64.apk) | 64 MB |
 
 All builds contain the same app and are signed with the same release key. When in doubt, use the universal build.
 
 </details>
 
-SHA-256 checksums are published as [`SHA256SUMS.txt`](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/SHA256SUMS.txt).
+SHA-256 checksums are published as [`SHA256SUMS.txt`](https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/SHA256SUMS.txt).
 
 > Android 10 (API 29) or newer is required. The APK is large because it bundles Python, yt-dlp, FFmpeg, aria2c and QuickJS for on-device extraction and merging.
 
@@ -136,8 +144,8 @@ If one native engine fails, YouDrop tries the other, then yt-dlp. Partial files 
 ### Debug build
 
 ```bash
-git clone https://github.com/Mohammad-Shahid-07/vid_grab.git
-cd vid_grab
+git clone https://github.com/Mohammad-Shahid-07/youdrop.git
+cd youdrop
 
 # Windows
 .\gradlew.bat :app:assembleDebug
@@ -190,7 +198,7 @@ app/build/outputs/apk/release/app-x86_64-release.apk
 <summary><b>Project structure</b></summary>
 
 ```text
-app/src/main/java/com/vidgrab/app/
+app/src/main/java/com/youdrop/app/
 ├── core/
 │   ├── engine/      # FastDirect, DirectJVM, yt-dlp, fallback and resume
 │   ├── extractor/   # NewPipe + InnerTube metadata resolution

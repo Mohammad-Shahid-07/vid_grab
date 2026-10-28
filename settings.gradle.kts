@@ -27,5 +27,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "VidGrab"
+rootProject.name = "YouDrop"
 include(":app")

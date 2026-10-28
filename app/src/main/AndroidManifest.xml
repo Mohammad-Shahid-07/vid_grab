@@ -37,7 +37,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.VidGrab"
+        android:theme="@style/Theme.YouDrop"
         android:usesCleartextTraffic="false"
         android:hardwareAccelerated="true"
         android:extractNativeLibs="true"
@@ -54,7 +54,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:theme="@style/Theme.VidGrab"
+            android:theme="@style/Theme.YouDrop"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
             <intent-filter>

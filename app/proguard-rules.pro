@@ -35,7 +35,7 @@
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }
--keep class com.vidgrab.app.core.webview.YouTubeJsBridge { *; }
+-keep class com.youdrop.app.core.webview.YouTubeJsBridge { *; }
 
 # Kotlin Coroutines
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}

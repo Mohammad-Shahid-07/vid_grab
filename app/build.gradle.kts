@@ -18,11 +18,11 @@ val keystoreProperties = Properties().apply {
 val hasReleaseKeystore = keystoreProperties.getProperty("storeFile")?.isNotBlank() == true
 
 android {
-    namespace = "com.vidgrab.app"
+    namespace = "com.youdrop.app"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.vidgrab.app"
+        applicationId = "com.youdrop.app"
         minSdk = 29
         targetSdk = 35
         versionCode = 1

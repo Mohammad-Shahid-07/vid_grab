@@ -2,7 +2,7 @@
 
 **The first public release of YouDrop: a private, ad-free YouTube browser and downloader for Android.**
 
-<img src="https://raw.githubusercontent.com/Mohammad-Shahid-07/vid_grab/main/assets/branding/banner.png" alt="YouDrop" width="100%" />
+<img src="https://raw.githubusercontent.com/Mohammad-Shahid-07/youdrop/main/assets/branding/banner.png" alt="YouDrop" width="100%" />
 
 ## Browse
 
@@ -40,7 +40,7 @@
 
 ## Install
 
-1. [**Download the universal APK**](https://github.com/Mohammad-Shahid-07/vid_grab/releases/download/v0.01/YouDrop-v0.01-universal.apk) (215 MB). One file that works on every supported device.
+1. [**Download the universal APK**](https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/YouDrop-v0.01-universal.apk) (215 MB). One file that works on every supported device.
 2. Open the file and allow **Install unknown apps** when prompted.
 3. Launch YouDrop and allow notifications for download progress.
 4. Optional: exempt YouDrop from battery optimization for long background downloads.
@@ -82,4 +82,4 @@ YouDrop is not affiliated with, endorsed by, or sponsored by YouTube, Google, or
 
 ---
 
-**Full documentation:** [README](https://github.com/Mohammad-Shahid-07/vid_grab#readme)
+**Full documentation:** [README](https://github.com/Mohammad-Shahid-07/youdrop#readme)

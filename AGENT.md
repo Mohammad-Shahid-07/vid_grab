@@ -1,6 +1,6 @@
 # Agent Operating Guidelines & Autonomous Audit Protocol
 
-This document establishes the mandatory protocol for all agentic development in this project (**VidGrab**).
+This document establishes the mandatory protocol for all agentic development in this project (**YouDrop**).
 
 ---
 
