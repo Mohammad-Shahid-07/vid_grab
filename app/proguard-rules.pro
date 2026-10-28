@@ -8,6 +8,11 @@
     native <methods>;
 }
 
+# Apache Commons Compress (used by youtubedl-android when unpacking Python/FFmpeg)
+# ExtraFieldUtils registers zip extra-field parsers and instantiates them by reflection.
+# Without this, R8 strips their no-arg constructors and app startup crashes in initPython().
+-keep class org.apache.commons.compress.archivers.zip.** { *; }
+
 # NewPipeExtractor
 -keep class org.schabi.newpipe.extractor.** { *; }
 -keep class * implements org.schabi.newpipe.extractor.downloader.Downloader { *; }
