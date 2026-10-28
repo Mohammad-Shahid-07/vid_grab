@@ -665,11 +665,83 @@ object YouTubeJsScripts {
         }
     }
 
+    // True when an element lays out its children in a horizontal row. The download chip
+    // must only ever be appended to one of these, never to a vertical title/metadata
+    // column (which pushed it underneath long titles).
+    function vgIsRowContainer(el) {
+        if (!el) return false;
+        try {
+            var cs = window.getComputedStyle(el);
+            if (!cs) return false;
+            if (cs.display === 'flex' || cs.display === 'inline-flex') {
+                return cs.flexDirection === 'row' || cs.flexDirection === 'row-reverse';
+            }
+            if (cs.display === 'grid' || cs.display === 'inline-grid') {
+                var cols = (cs.gridTemplateColumns || '').trim().split(/\s+/);
+                return cols.length > 1 && cols[0] !== 'none';
+            }
+        } catch (e) {}
+        return false;
+    }
+
+    // Finds the horizontal row that owns the native 3-dots menu. If the menu has not been
+    // rendered yet, we fall back to a known horizontal metadata row and let the next scan
+    // move the chip next to the menu; if no row exists at all, return null so the caller
+    // retries instead of dropping the chip below the title.
+    function vgResolveRowPlacement(topCard, menuContainer) {
+        if (!topCard) return null;
+
+        var anchor = menuContainer;
+        var parent = anchor ? anchor.parentNode : null;
+        for (var depth = 0; anchor && parent && parent !== topCard && depth < 4; depth++) {
+            if (vgIsRowContainer(parent)) {
+                return { target: parent, before: anchor };
+            }
+            anchor = parent;
+            parent = parent.parentNode;
+        }
+
+        var candidates = topCard.querySelectorAll(
+            '.media-item-info, .media-item-details, .compact-media-item-metadata, ' +
+            '.slim-video-information-title-and-actions, ' +
+            '[class*="MediaItemMetadata"], [class*="media-item-details"]'
+        );
+        for (var i = 0; i < candidates.length; i++) {
+            if (vgIsRowContainer(candidates[i])) {
+                return { target: candidates[i], before: null };
+            }
+        }
+        return null;
+    }
+
+    function vgPlaceHost(host, placement) {
+        if (!host || !placement || !placement.target) return false;
+        var target = placement.target;
+        var before = placement.before;
+        if (before && before.parentNode !== target) before = null;
+        var correctlyPlaced = host.parentNode === target &&
+            (before ? host.nextElementSibling === before : host.nextElementSibling === null);
+        if (correctlyPlaced) return true;
+        try {
+            if (before) target.insertBefore(host, before);
+            else target.appendChild(host);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     function createShadowButton(cardNode) {
         var topCard = getTopCard(cardNode);
         if (!topCard) return;
         // Never inject into a page-level header (the native FAB covers those pages).
         if (topCard.matches(PAGE_CHROME_CONTAINERS)) return;
+
+        // Resolve the row first: the menu is the preferred anchor, but YouTube often
+        // renders titles before the action menu.
+        var menuBtn = topCard.querySelector('ytm-menu-renderer, .media-item-menu, button.item-action, button[aria-label*="Action" i], button[aria-label*="menu" i]');
+        var menuContainer = menuBtn ? (menuBtn.closest('ytm-menu-renderer, .media-item-menu') || menuBtn) : null;
+        var placement = vgResolveRowPlacement(topCard, menuContainer);
 
         // Clean up any extra duplicate buttons that might exist in this card
         var existingHosts = topCard.querySelectorAll('[data-vidgrab-host]');
@@ -678,49 +750,23 @@ object YouTubeJsScripts {
                 try { existingHosts[k].remove(); } catch(e){}
             }
         }
-        // If the card already has exactly 1 button, do not inject another
-        if (existingHosts.length >= 1 || topCard.hasAttribute('data-vidgrab-has-btn')) {
+        // Existing chip: move it if the menu has since appeared or the layout changed.
+        if (existingHosts.length >= 1) {
             topCard.setAttribute('data-vidgrab-has-btn', 'true');
+            if (placement) vgPlaceHost(existingHosts[0], placement);
             return;
         }
+        if (topCard.hasAttribute('data-vidgrab-has-btn')) return;
 
-        // Tag card as processed immediately to prevent concurrent duplicate injections
+        // No horizontal row yet: leave the card unprocessed and retry on the next scan.
+        if (!placement) return;
+
+        // Tag card as processed only after a valid horizontal row was found.
         topCard.setAttribute('data-vidgrab-has-btn', 'true');
-
-        // Target placement:
-        // Priority 1: Directly before the 3-dots action menu container (cleanest native placement)
-        var menuBtn = topCard.querySelector('ytm-menu-renderer, .media-item-menu, button.item-action, button[aria-label*="Action" i], button[aria-label*="menu" i]');
-        var menuContainer = menuBtn ? (menuBtn.closest('ytm-menu-renderer, .media-item-menu') || menuBtn) : null;
-
-        // Priority 2: In metadata/details row
-        var metaContainer = (!menuContainer) ? topCard.querySelector('.details, .media-item-metadata, .compact-media-item-metadata, .slim-video-information-title-and-actions') : null;
-
-        // Priority 3: Beside headline/title
-        var titleEl = (!menuContainer && !metaContainer) ? topCard.querySelector('.media-item-headline, .compact-media-item-headline, h1, h2, h3, [class*="headline"]') : null;
-        var titleParent = (titleEl && titleEl.parentNode && titleEl.parentNode !== topCard) ? titleEl.parentNode : null;
-
-        var insertionTarget = null;
-        var insertBeforeNode = null;
-
-        if (menuContainer && menuContainer.parentNode) {
-            insertionTarget = menuContainer.parentNode;
-            insertBeforeNode = menuContainer;
-        } else if (metaContainer) {
-            insertionTarget = metaContainer;
-            insertBeforeNode = null;
-        } else if (titleParent) {
-            insertionTarget = titleParent;
-            insertBeforeNode = null;
-        }
-
-        // Strictly avoid appending to card root or thumbnail containers
-        if (!insertionTarget) {
-            return;
-        }
 
         var host = document.createElement('div');
         host.setAttribute('data-vidgrab-host', 'true');
-        host.style.cssText = 'display: inline-flex; align-items: center; justify-content: center; margin-left: 2px; margin-right: 0; flex-shrink: 0; align-self: center;';
+        host.style.cssText = 'display: inline-flex; align-items: center; justify-content: center; margin-left: 2px; margin-right: 0; flex: 0 0 auto; flex-shrink: 0; align-self: center;';
 
         var shadow = host.attachShadow({ mode: 'open' });
 
@@ -996,11 +1042,7 @@ object YouTubeJsScripts {
         shadow.appendChild(style);
         shadow.appendChild(btn);
 
-        if (insertBeforeNode) {
-            insertionTarget.insertBefore(host, insertBeforeNode);
-        } else {
-            insertionTarget.appendChild(host);
-        }
+        vgPlaceHost(host, placement);
     }
 
     window.__vidgrabScanNodes = function() {
