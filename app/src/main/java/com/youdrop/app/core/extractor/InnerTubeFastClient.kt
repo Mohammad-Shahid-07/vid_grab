@@ -27,9 +27,12 @@ object InnerTubeFastClient {
 
     private val fastHttpClient by lazy {
         App.sharedOkHttpClient.newBuilder()
-            .callTimeout(2500, TimeUnit.MILLISECONDS)
-            .connectTimeout(2000, TimeUnit.MILLISECONDS)
-            .readTimeout(2500, TimeUnit.MILLISECONDS)
+            // A cold YouTube player response can take 2-3 seconds on mobile networks.
+            // The previous 2.5s ceiling timed out before a valid response arrived, which
+            // silently dropped the picker into fixed-size presets.
+            .callTimeout(6000, TimeUnit.MILLISECONDS)
+            .connectTimeout(3000, TimeUnit.MILLISECONDS)
+            .readTimeout(6000, TimeUnit.MILLISECONDS)
             .build()
     }
 
