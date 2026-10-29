@@ -2605,3 +2605,40 @@ All four are signed with certificate SHA-256 `21249cb9dc2c2c12f86771ce4aef597b03
 - [x] An individual channel video triggers a single-video download, not a playlist.
 - [x] Universal APK remains the primary download; ABI builds stay available but secondary.
 - [x] Release assets and `SHA256SUMS.txt` are replaced for tag `v0.01`.
+
+---
+
+## Audit Entry - October 29, 2026: InnerTube Client Refresh for Real File Sizes
+- **Date/Time**: 2026-10-29T20:45:00+05:30
+- **Scope**: `core/extractor/InnerTubeFastClient.kt`, `core/webview/YouTubeJsScripts.kt`, release asset refresh.
+
+### 1. Reported Symptom
+
+- The quality picker showed the same estimated file size for every video, which is the signature of the Tier 3 smart-preset fallback (`180s` default duration with fixed per-height bitrates).
+
+### 2. Root Cause
+
+- The bundled InnerTube clients used old app versions (`IOS 19.45.4`, `ANDROID 19.44.38`). YouTube now rejects those versions with HTTP 400, and `VISIONOS 1.02` returns `LOGIN_REQUIRED` for many videos.
+- With Tier 1 and Tier 2 unavailable, resolution fell through to `FormatSelectorBuilder.buildStandardPresets()`, producing identical sizes across different videos.
+- A direct probe confirmed the same videos resolve with real durations and byte sizes when using `IOS 20.10.4` and `ANDROID 20.10.38`.
+
+### 3. Fix
+
+- Reordered the client chain to `IOS -> ANDROID -> VISIONOS -> ANDROID_VR` and refreshed the IOS/ANDROID version, user-agent and OS metadata.
+- Kept VISIONOS as the cookie-aware fallback for session-gated videos.
+- Tightened the DOM duration fallback in the injected script: duration badges are read from thumbnail overlay elements and validated against `m:ss` / `h:mm:ss`, so a title span cannot be mistaken for a duration.
+
+### 4. Verification
+
+- **API probe**: `RE3_PGwDwhw` returned 128 formats, 2596s duration and direct URLs with `IOS 20.10.4`; the old clients returned no formats.
+- **Build**: `.\gradlew.bat :app:assembleRelease --console=plain` -> `BUILD SUCCESSFUL`.
+- **APK**: `com.youdrop.app`, versionCode 1, versionName 0.01; updated client strings present in `classes.dex`.
+- **Device**: USB debugging connection was unavailable during this pass (`adb devices` empty; Windows reported a USB control-transfer failure), so the final on-device size check is still pending.
+
+### 5. Supervisor Review Checklist
+
+- [x] The resolver no longer relies on expired InnerTube client versions.
+- [x] Direct URLs are still required before Tier 2 is accepted.
+- [x] Presets remain a last-resort fallback only.
+- [x] The v0.01 release assets and checksums are replaced with the rebuilt APKs.
+- [ ] On-device confirmation that two different videos show different real sizes.
