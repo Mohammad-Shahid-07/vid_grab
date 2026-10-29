@@ -2641,4 +2641,27 @@ All four are signed with certificate SHA-256 `21249cb9dc2c2c12f86771ce4aef597b03
 - [x] Direct URLs are still required before Tier 2 is accepted.
 - [x] Presets remain a last-resort fallback only.
 - [x] The v0.01 release assets and checksums are replaced with the rebuilt APKs.
-- [ ] On-device confirmation that two different videos show different real sizes.
+- [x] On-device confirmation that two different videos show different real sizes.
+
+---
+
+## Audit Entry - October 29, 2026: On-Device Size Verification and Install Cleanup
+
+### 1. Device Verification
+
+- Installed `app-armeabi-v7a-release.apk` over `com.youdrop.app` on `RZCW415JDCZ` (Galaxy M13 5G, Android 14).
+- Opened two different videos and read the native quality picker:
+  - `Everything MUSHOKU...` (`HJmrPEXfI-8`): 1080p **2.47 GB**, 720p **1.03 GB**, 480p **704.6 MB**.
+  - `Rick Astley - Never Gonna Give You Up` (`dQw4w9WgXcQ`, 213s): 1080p **80.5 MB**, 720p **28.5 MB**, 480p **16.7 MB**, audio 129k **3.3 MB**.
+- The sizes differ per video and match the returned InnerTube streams, confirming the preset fallback is no longer being used.
+
+### 2. Install Cleanup (user-confirmed)
+
+- Inventory showed four installs labelled **YouDrop**:
+  - `com.youdrop.app` - release v0.01 (kept)
+  - `com.youdrop.app.debug` - debug build (removed)
+  - `com.vidgrab.app` - old release, paused download queue (removed)
+  - `com.vidgrab.app.debug` - old debug build, 143 MB external data (removed)
+- Removed the three old packages for user 0 after explicit confirmation. The Dual App user (95) no longer lists them; only `com.youdrop.app` remains for both users.
+- `com.playme.player.debug` is unrelated (PlayMe) and was left untouched.
+- Removal deleted the old paused queue and approximately 185 MB of downloads associated with the `vidgrab` packages.
