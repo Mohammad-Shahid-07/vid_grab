@@ -972,11 +972,17 @@ object YouTubeJsScripts {
                     }
                 }
 
-                // 4. Check duration badges or time status overlays in topCard
+                // 4. Check duration badges or time status overlays in topCard. Query the
+                // thumbnail overlay first so a title span can never be parsed as a duration.
                 if (durationSec <= 0 && topCard) {
-                    var badgeEl = topCard.querySelector('.badge-shape-wiz__text, ytd-thumbnail-overlay-time-status-renderer, [class*="time-status"], [class*="duration"], .media-item-duration, ytm-thumbnail-overlay-time-status-renderer, span[role="text"]');
-                    if (badgeEl && badgeEl.innerText) {
-                        var parts = badgeEl.innerText.trim().split(':').map(function(p) { return parseInt(p, 10) || 0; });
+                    var durationBadges = topCard.querySelectorAll(
+                        'ytm-thumbnail-overlay-time-status-renderer, ytd-thumbnail-overlay-time-status-renderer, ' +
+                        '.media-item-duration, [class*="time-status"], .badge-shape-wiz__text'
+                    );
+                    for (var d = 0; d < durationBadges.length && durationSec <= 0; d++) {
+                        var badgeText = (durationBadges[d].innerText || '').trim();
+                        if (!/^\d{1,2}(:\d{2}){1,2}$/.test(badgeText)) continue;
+                        var parts = badgeText.split(':').map(function(p) { return parseInt(p, 10) || 0; });
                         if (parts.length === 2) {
                             durationSec = (parts[0] * 60) + parts[1];
                         } else if (parts.length === 3) {

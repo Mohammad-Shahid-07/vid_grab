@@ -53,7 +53,32 @@ object InnerTubeFastClient {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 
     private val clientStrategies = listOf(
-        // 1. VISIONOS (1DM Verified Contract: supplies direct, unthrottled adaptive URLs via HTML5_PREF_WANTS)
+        // 1. IOS (Clean direct MP4/AAC streams; current versions still pass without a login)
+        InnerTubeClientConfig(
+            name = "IOS",
+            clientName = "IOS",
+            clientVersion = "20.10.4",
+            userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+            clientNumberHeader = "5",
+            deviceMake = "Apple",
+            deviceModel = "iPhone16,2",
+            osName = "iPhone",
+            osVersion = "18.3.2.22D82",
+            supportsWebCookies = false
+        ),
+        // 2. ANDROID (Native mobile streams; also returns direct URLs for most videos)
+        InnerTubeClientConfig(
+            name = "ANDROID",
+            clientName = "ANDROID",
+            clientVersion = "20.10.38",
+            userAgent = "com.google.android.youtube/20.10.38 (Linux; U; Android 15) gzip",
+            clientNumberHeader = "3",
+            androidSdkVersion = 35,
+            osName = "Android",
+            osVersion = "15",
+            supportsWebCookies = false
+        ),
+        // 3. VISIONOS (session-aware fallback for videos that require the WebView cookies)
         InnerTubeClientConfig(
             name = "VISIONOS",
             clientName = "VISIONOS",
@@ -65,31 +90,6 @@ object InnerTubeFastClient {
             osName = "visionOS",
             osVersion = "26.5.23O471",
             supportsWebCookies = true
-        ),
-        // 2. IOS (Clean raw MP4/AAC streams)
-        InnerTubeClientConfig(
-            name = "IOS",
-            clientName = "IOS",
-            clientVersion = "19.45.4",
-            userAgent = "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
-            clientNumberHeader = "5",
-            deviceMake = "Apple",
-            deviceModel = "iPhone16,2",
-            osName = "iPhone",
-            osVersion = "18.1.0.22B83",
-            supportsWebCookies = false
-        ),
-        // 3. ANDROID (Native mobile stream fallback)
-        InnerTubeClientConfig(
-            name = "ANDROID",
-            clientName = "ANDROID",
-            clientVersion = "19.44.38",
-            userAgent = "com.google.android.youtube/19.44.38 (Linux; U; Android 15) gzip",
-            clientNumberHeader = "3",
-            androidSdkVersion = 35,
-            osName = "Android",
-            osVersion = "15",
-            supportsWebCookies = false
         ),
         // 4. ANDROID_VR (Oculus Quest 3)
         InnerTubeClientConfig(
