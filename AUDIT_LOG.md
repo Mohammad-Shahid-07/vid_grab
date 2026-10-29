@@ -2665,3 +2665,14 @@ All four are signed with certificate SHA-256 `21249cb9dc2c2c12f86771ce4aef597b03
 - Removed the three old packages for user 0 after explicit confirmation. The Dual App user (95) no longer lists them; only `com.youdrop.app` remains for both users.
 - `com.playme.player.debug` is unrelated (PlayMe) and was left untouched.
 - Removal deleted the old paused queue and approximately 185 MB of downloads associated with the `vidgrab` packages.
+
+### 3. Release Asset Verification
+
+- `gh release upload v0.01 --clobber` was retried per file until every asset succeeded.
+- Remote GitHub SHA-256 digests now match `dist/SHA256SUMS.txt` exactly:
+  - `YouDrop-v0.01-arm64-v8a.apk` - `d94494b8...c331b9`, 64,662,673 bytes
+  - `YouDrop-v0.01-armeabi-v7a.apk` - `eacfb10d...e89739`, 57,493,931 bytes
+  - `YouDrop-v0.01-universal.apk` - `203d7628...cb53bf`, 225,124,140 bytes
+  - `YouDrop-v0.01-x86_64.apk` - `48242a0f...07d941`, 67,669,754 bytes
+  - `SHA256SUMS.txt` - `a15ef4b9...623b9a`, 379 bytes
+- The `v0.01` tag remains at `17a4701`, the code commit the APKs were built from. Later commits are documentation only.
